@@ -154,6 +154,30 @@ func note(err error) {
 // MatcherVersion is stamped on every row (payload.matcher).
 const MatcherVersion = "token-v1"
 
+// The two row SOURCES snip emits under.
+//
+// 🔴 CLIPS GET THEIR OWN SOURCE, AND THIS IS NOT COSMETIC. The audit's
+// analysis script (scripts/session-analysis/snip-usage.py) has one constant
+// both its queries consume, which counts a fire as
+// `source='snip' AND kind='fire' AND outcome='select'` — i.e. demand for a
+// CATALOG row. A shared-clipboard fire is not that, and landing it in
+// source=snip breaks the analysis four ways: every clip fire becomes a false
+// RETIRED row; an empty label collapses the whole population onto one bucket;
+// a clip's query, credited as term evidence, can rescue a genuinely DEAD
+// snippet from the only prune verdict there is; and --replay replays clip
+// queries against the nix catalog and reports a bogus undiscoverability
+// number. With a separate source that script needs ZERO changes and every
+// verdict stays correct.
+//
+// 🔴 `method` IS NOT A USABLE DISCRIMINATOR for this, so do not reach for it
+// instead: the aggregation is `"direct" if method == "direct" else "search"` —
+// an else, not a whitelist — so any third value is silently counted as a
+// SEARCH fire.
+const (
+	SourceSnip = "snip"
+	SourceClip = "snipclip"
+)
+
 // Payload is the JSON `payload` blob of a snip fire row — the telemetry
 // vocabulary. Field order here is the JSON key order
 // the row carries.
@@ -209,7 +233,38 @@ func (p Payload) LabelText() string {
 // the top-level `app` is what downstream analytics key on), while the payload
 // JSON carries the full field set, including `app` again so payload-side
 // consumers see the origin class without reaching for the top-level column.
-func FireFields(p Payload) []Field {
+func FireFields(p Payload) []Field { return FireFieldsSource(p, SourceSnip) }
+
+// FireFieldsSource is FireFields with the row's `source` named explicitly —
+// SourceSnip for a catalog fire, SourceClip for a shared-clipboard one. An
+// empty source falls back to SourceSnip rather than emitting a row with no
+// source at all (an unattributed row is worse than a mis-attributed one: the
+// analysis cannot even see it to exclude it).
+func FireFieldsSource(p Payload, source string) []Field {
+	if source == "" {
+		source = SourceSnip
+	}
+	// 🔴 A CLIP ROW CARRIES NO QUERY, AND THE REDACTION LIVES HERE BECAUSE THIS
+	// IS THE ONE PLACE EVERY ROW PASSES.
+	//
+	// For the catalog the query is a few words of a snippet's own label or its
+	// declared search_terms — non-secret, and the audit's term evidence is made
+	// of it. In the SHARED CLIPBOARD the operator is typing substrings of CLIP
+	// BODIES: the filter matches on the body and nothing else, so the query is
+	// a fragment of the captured text itself, which the design treats as
+	// possibly credential-bearing. The spool ships to ClickHouse, which has its
+	// own retention that no part of this feature's design scoped — so the
+	// shared mode's filter must not reach it (round-1 finding 6).
+	//
+	// Redacting at the SINK rather than at each caller is the point: the picker
+	// emits clip rows (cancel/abort) and the paste helper emits them
+	// (select/abort), and a third caller would arrive redacted without knowing
+	// this rule exists. `method` is kept: "search" vs "direct" says only
+	// WHETHER something was typed, which is the signal the audit reads, and it
+	// carries none of the text.
+	if source == SourceClip {
+		p.Query, p.SearchTerm = "", ""
+	}
 	p.Tool = "snip"
 	p.Matcher = MatcherVersion
 	p.Inferred = false
@@ -220,7 +275,7 @@ func FireFields(p Payload) []Field {
 		blob = []byte("{}")
 	}
 	return []Field{
-		{Key: "source", Value: "snip"},
+		{Key: "source", Value: source},
 		{Key: "kind", Value: "fire"},
 		{Key: "text", Value: p.LabelText()},
 		{Key: "app", Value: p.App},
@@ -230,7 +285,14 @@ func FireFields(p Payload) []Field {
 	}
 }
 
-// EmitFire builds and appends one snip fire row. Best-effort, like Emit.
-func EmitFire(p Payload, spoolDir string) string {
-	return Emit(FireFields(p), spoolDir)
+// EmitFireSource builds and appends one snip fire row with the row's source
+// named. Best-effort, like Emit.
+//
+// It is the ONLY fire emitter: a source-less EmitFire existed until both call
+// sites named their source, and keeping it meant two ways to write the same row
+// where the defaulted one silently lands in source=snip. A caller that wants
+// the catalog's source passes SourceSnip (or "", which FireFieldsSource maps to
+// it).
+func EmitFireSource(p Payload, source, spoolDir string) string {
+	return Emit(FireFieldsSource(p, source), spoolDir)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/snip/internal/telemetry"
 )
@@ -17,9 +18,23 @@ var stderrW = os.Stderr
 
 // emitFireFn is the row emitter as a package var so tests can stub it.
 // Default: the shared telemetry emitter (spool contract in internal/telemetry).
-var emitFireFn = func(p telemetry.Payload) string { return telemetry.EmitFire(p, "") }
+// The SOURCE is a parameter, not a constant: a shared-clipboard row must not
+// land in source=snip, where the audit's analysis would read it as demand for
+// a catalog snippet (telemetry.SourceClip says why).
+var emitFireFn = func(p telemetry.Payload, source string) string {
+	return telemetry.EmitFireSource(p, source, "")
+}
 
-func emitFire(p telemetry.Payload) string { return emitFireFn(p) }
+func emitFire(p telemetry.Payload, source string) string { return emitFireFn(p, source) }
+
+// nowMSFn is the real clock the clip rows' ages render against, and it lives
+// here because this is the world-touching file: the pure model (picker.go,
+// shared.go) must not call time.Now itself.
+//
+// 🔴 IT IS NOT THE TEST SEAM — that is Model.NowMS, which Model.nowMS prefers
+// whenever it is non-zero, and which is what the clock-sensitive test sets. No
+// test assigns this var; the comment here used to claim one did.
+var nowMSFn = func() int64 { return time.Now().UnixMilli() }
 
 // editorCommand resolves the editor to run on the staged body and returns the
 // command for the picker to hand the terminal to.

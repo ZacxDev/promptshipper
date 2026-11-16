@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/ZacxDev/snip/internal/artifact"
+	"github.com/ZacxDev/snip/internal/shared"
 	"github.com/ZacxDev/snip/internal/telemetry"
 )
 
@@ -32,6 +33,49 @@ type fakeLauncher struct {
 	applyErr   error
 	deleted    []string // labels handed to ApplyDelete
 	deleteErr  error
+
+	// the shared-clipboard path
+	clips      []shared.Clip // what FetchShared returns
+	fetchErr   error         // ...or the reason it could not
+	fetches    int           // how many times FetchShared was called
+	clipIDs    []int64       // ids handed to SpawnPasteClip
+	clipBodies []string      // bodies handed to SpawnPasteClip
+	clipQuery  []string      // the SNIP_QUERY handed to each clip spawn
+
+	// the clip DELETE path
+	clipDeletes  []int64 // ids handed to DeleteClip, in order
+	clipDeleteEr error   // ...or the reason the store refused
+	// clipsAfterDelete, when non-nil, is what FetchShared answers once a
+	// delete has landed — so a test can prove the list is RE-READ from the
+	// store rather than edited locally.
+	clipsAfterDelete []shared.Clip
+}
+
+func (f *fakeLauncher) DeleteClip(id int64) error {
+	f.clipDeletes = append(f.clipDeletes, id)
+	if f.clipDeleteEr != nil {
+		return f.clipDeleteEr
+	}
+	if f.clipsAfterDelete != nil {
+		f.clips = f.clipsAfterDelete
+	}
+	return nil
+}
+
+func (f *fakeLauncher) FetchShared() ([]shared.Clip, error) {
+	f.fetches++
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	return f.clips, nil
+}
+
+func (f *fakeLauncher) SpawnPasteClip(id int64, body, query string, openLatencyMS int64) error {
+	f.clipIDs = append(f.clipIDs, id)
+	f.clipBodies = append(f.clipBodies, body)
+	f.clipQuery = append(f.clipQuery, query)
+	f.openMS = append(f.openMS, openLatencyMS)
+	return f.spawnErr
 }
 
 func (f *fakeLauncher) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string) error {
@@ -697,8 +741,14 @@ func TestAnEmptiedBodyAsksToDeleteInsteadOfLanding(t *testing.T) {
 	if m2.confirmDelete != "Merge rule" {
 		t.Fatalf("confirmDelete = %q, want the row under the cursor", m2.confirmDelete)
 	}
-	if !strings.Contains(m2.notice, "delete") || !strings.Contains(m2.notice, "[y/N]") {
-		t.Fatalf("the prompt must say what it is asking: %q", m2.notice)
+	// 🔴 ASSERTED ON THE RENDERED FRAME, NOT ON m.notice. The prompt is
+	// DERIVED from confirmDelete at render time (confirmPrompt) precisely so
+	// there is no stored copy for a handler to clear; asserting on a stored
+	// string would be asserting on the shape the blocker lived in.
+	screen := strings.Join(bareLines(m2), "\n")
+	if !strings.Contains(screen, "delete") || !strings.Contains(screen, "[y/N]") ||
+		!strings.Contains(screen, "Merge rule") {
+		t.Fatalf("the prompt must say what it is asking, on screen: %q", screen)
 	}
 }
 
@@ -848,13 +898,20 @@ func TestDeleteFailureStaysOpenWithTheReason(t *testing.T) {
 
 // --- row-emitter capture -----------------------------------------------------
 
-type capturedRows struct{ rows []telemetry.Payload }
+// capturedRows records the picker's own rows AND the source each was emitted
+// under — a cancel typed against the clip list is evidence about clips, not
+// about the catalog, and the audit's analysis keys on that source.
+type capturedRows struct {
+	rows    []telemetry.Payload
+	sources []string
+}
 
 func capturePickerRows(t *testing.T) *capturedRows {
 	c := &capturedRows{}
 	orig := emitFireFn
-	emitFireFn = func(p telemetry.Payload) string {
+	emitFireFn = func(p telemetry.Payload, source string) string {
 		c.rows = append(c.rows, p)
+		c.sources = append(c.sources, source)
 		return ""
 	}
 	t.Cleanup(func() { emitFireFn = orig })
