@@ -30,7 +30,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
 )
 
 // maxEntries bounds the file. A snippet catalog is ~30 rows and the operator

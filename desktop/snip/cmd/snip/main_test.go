@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
-	"github.com/ZacxDev/snip/internal/recent"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/recent"
 )
 
 // The version is the value the release tooling stamps back via -X — the two

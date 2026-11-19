@@ -1,8 +1,9 @@
-// The module path is the published location: github.com/ZacxDev/snip. The
-// source lives at the repo root (cmd/snip + internal/*) and installs with
-// `go install github.com/ZacxDev/snip/cmd/snip@latest`; release builds stamp
-// `cmd/snip/version.go`'s `buildVersion` via -X.
-module github.com/ZacxDev/snip
+// The module path is the published location inside the promptshipper
+// monorepo: github.com/ZacxDev/promptshipper/desktop/snip (folded in from
+// ZacxDev/snip with its history). It installs with
+// `go install github.com/ZacxDev/promptshipper/desktop/snip/cmd/snip@latest`;
+// release builds stamp `cmd/snip/version.go`'s `buildVersion` via -X.
+module github.com/ZacxDev/promptshipper/desktop/snip
 
 // Floor matches Bubble Tea v2.1.0's Go requirement.
 go 1.26.0

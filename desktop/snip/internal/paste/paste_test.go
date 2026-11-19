@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
-	"github.com/ZacxDev/snip/internal/telemetry"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
 // fakeEffects records every call IN ORDER — the paste sequence's order is the

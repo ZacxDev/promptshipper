@@ -23,8 +23,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/ZacxDev/snip/internal/shared"
-	"github.com/ZacxDev/snip/internal/ui"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/shared"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/ui"
 )
 
 // mode is which population the list shows.

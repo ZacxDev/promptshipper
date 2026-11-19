@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ZacxDev/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
 )
 
 // 🔴 --ephemeral WITHOUT --body-file IS A USAGE ERROR, NOT A PASTE OF NOTHING.

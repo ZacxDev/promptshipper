@@ -25,11 +25,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
-	"github.com/ZacxDev/snip/internal/effects"
-	"github.com/ZacxDev/snip/internal/paste"
-	"github.com/ZacxDev/snip/internal/picker"
-	"github.com/ZacxDev/snip/internal/recent"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/effects"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/paste"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/picker"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/recent"
 )
 
 func main() {

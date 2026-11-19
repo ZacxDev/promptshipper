@@ -8,9 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/ZacxDev/snip/internal/artifact"
-	"github.com/ZacxDev/snip/internal/shared"
-	"github.com/ZacxDev/snip/internal/telemetry"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/shared"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
 // fakeLauncher records the spawn + toasts; the model's world-touching calls.

@@ -13,8 +13,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/ZacxDev/snip/internal/shared"
-	"github.com/ZacxDev/snip/internal/telemetry"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/shared"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
 // 🔴 MOSTLY INVARIANT GUARDS, NOT REGRESSION COVERAGE. The shared mode is new

@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
-	"github.com/ZacxDev/snip/internal/effects"
-	"github.com/ZacxDev/snip/internal/telemetry"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/effects"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
 // ClipVar is the ONE variable the artifact may carry (no shell vars, no date

@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/shared"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/shared"
 )
 
 // SnipWindowClass is the WM_CLASS the picker window carries — set by

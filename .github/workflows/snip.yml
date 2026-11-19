@@ -1,20 +1,28 @@
-name: ci
+name: snip
+
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  snip:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/snip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: desktop/snip/go.mod
+          cache-dependency-path: desktop/snip/go.sum
       - name: vet
         run: go vet ./...
       - name: test
-        run: go test ./...
+        run: go test -count=1 ./...
       - name: build
         run: go build ./...

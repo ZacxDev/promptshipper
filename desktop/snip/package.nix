@@ -1,5 +1,7 @@
-# snip's nix package. The canonical source is THIS repo (github:ZacxDev/snip);
-# a consumer that wants desktop integration adds its own wrapper on top (see
+# snip's nix package. The canonical source is promptshipper's desktop/snip/
+# (folded in from github:ZacxDev/snip); the root flake calls this file with
+# `src = ./desktop/snip`. A consumer that wants desktop integration adds its
+# own wrapper on top (see
 # devrc's nix/pkgs/tools/snip/default.nix for the worked example: a launcher
 # that captures the origin window, exports SNIP_REPO, and joins the binaries).
 #

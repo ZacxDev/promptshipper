@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/artifact"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
 )
 
 func cat() []artifact.Snippet {

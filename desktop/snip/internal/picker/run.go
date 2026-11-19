@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ZacxDev/snip/internal/telemetry"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
 // stderrW is the picker's error channel; a test overrides it to capture.
