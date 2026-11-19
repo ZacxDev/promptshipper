@@ -27,6 +27,7 @@ func writeEnv(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	t.Setenv("SNIP_SHARED_ENV", path)
+	t.Setenv("SNIP_PAIRING", "")
 	return path
 }
 
@@ -56,6 +57,7 @@ func TestLoadReadsTheTwoKeys(t *testing.T) {
 func TestAMissingFileNamesThePathAndBothKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent", "shared.env")
 	t.Setenv("SNIP_SHARED_ENV", path)
+	t.Setenv("SNIP_PAIRING", "")
 	_, err := Load()
 	if err == nil {
 		t.Fatal("a missing config file must be an error, not a zero config")
@@ -114,6 +116,7 @@ func TestThereIsNoBuiltInEndpoint(t *testing.T) {
 	// Point the resolver at a directory that holds no config: XDG_CONFIG_HOME
 	// is honoured ahead of $HOME, so this covers the default path too.
 	t.Setenv("SNIP_SHARED_ENV", "")
+	t.Setenv("SNIP_PAIRING", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg, err := Load()
 	if err == nil {

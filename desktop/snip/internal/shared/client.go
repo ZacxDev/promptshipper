@@ -139,7 +139,7 @@ func (c *Client) Delete(id int64) error {
 	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
 		return nil
 	}
-	return statusError(code, body)
+	return statusError(code, body, c.cfg.tokenName())
 }
 
 // get performs one authenticated GET and returns the body of a 200, mapping
@@ -150,7 +150,7 @@ func (c *Client) get(u string) ([]byte, error) {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, statusError(code, body)
+		return nil, statusError(code, body, c.cfg.tokenName())
 	}
 	return body, nil
 }
@@ -208,13 +208,13 @@ func transportMessage(err error) string {
 // nothing this client could compose is better. 401 is spelled out, because
 // "unauthorized" on this path means one specific thing: the configured token
 // is wrong.
-func statusError(code int, body []byte) error {
+func statusError(code int, body []byte, tokenName string) error {
 	var e errResponse
 	if json.Unmarshal(body, &e) == nil && e.Detail != "" {
 		return fmt.Errorf("clip store refused (%d): %s", code, e.Detail)
 	}
 	if code == http.StatusUnauthorized {
-		return fmt.Errorf("clip store refused (401): %s is not accepted", KeyToken)
+		return fmt.Errorf("clip store refused (401): %s is not accepted", tokenName)
 	}
 	if json.Unmarshal(body, &e) == nil && e.Error != "" {
 		return fmt.Errorf("clip store refused (%d): %s", code, e.Error)

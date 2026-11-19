@@ -38,14 +38,15 @@ catalog.
 ## Install
 
 ```sh
-go install github.com/ZacxDev/snip/cmd/snip@latest
+go install github.com/ZacxDev/promptshipper/desktop/snip/cmd/snip@latest
 ```
 
-or from a checkout:
+or from a checkout of [promptshipper](https://github.com/ZacxDev/promptshipper),
+where snip is the desktop client (`desktop/snip/`, its own Go module):
 
 ```sh
-git clone https://github.com/ZacxDev/snip
-cd snip
+git clone https://github.com/ZacxDev/promptshipper
+cd promptshipper/desktop/snip
 go build -o snip ./cmd/snip
 ```
 
@@ -144,22 +145,53 @@ It is a **mode, not a merged list**, and deliberately so:
 
 ### Configuring it
 
-Write `~/.config/snip/shared.env`, mode **0600** — an env file with two keys:
+The store is promptshipper's **clip server** (`server/clip/`). There are two
+ways to point snip at it; use exactly one.
+
+**From the pairing payload (recommended).** The same payload the phone scans
+([docs/pairing.md](../../docs/pairing.md), version 1). On the server machine,
+run `./setup --pairing` in your own terminal and save its `PAIRING_PAYLOAD=…`
+line — or just the JSON after the `=` — to `~/.config/snip/pairing.json`,
+mode **0600**:
 
 ```sh
-SNIP_SHARED_URL=http://your-store.example:8080
+install -m 600 /dev/null ~/.config/snip/pairing.json
+$EDITOR ~/.config/snip/pairing.json     # paste the PAIRING_PAYLOAD= line
+```
+
+snip uses the payload's `clip` object. It applies the v1 contract's refusals
+in full even though it never talks to `stt`: a payload that is not
+`"type":"promptshipper-pairing"`, has a `v` other than `1`, lacks `stt` or
+`clip` (or a `url`/`token` in either), has a base URL with a path, query or no
+port, or a token under 24 characters or outside `[A-Za-z0-9._~-]` is refused
+with the reason, never half-used. Unknown fields are ignored. After
+`./setup --rotate`, save the new payload over the old file.
+
+**Or an env file.** `~/.config/snip/shared.env`, mode **0600**, with two keys:
+
+```sh
+SNIP_SHARED_URL=http://your-store.example:8139
 SNIP_SHARED_TOKEN=your-bearer-token
 ```
+
+`$SNIP_PAIRING` / `$SNIP_SHARED_ENV` override the two paths, and an override
+wins over a default file. **Two sources at the same level are an error, not a
+precedence**: both overrides set, or both default files present, and the shared
+view tells you which two files to choose between — a stale `shared.env`
+silently winning over a fresh pairing is the case this prevents.
 
 **snip ships no default endpoint and no default token, on purpose.** This is
 a public repository; an address compiled in here would be the *author's*
 network, and a token distributed in a build artifact (a Nix store path is
 world-readable) would be readable by every local user on the machine. A
-launcher wrapper may override the *path* (`SNIP_SHARED_ENV`); never the value.
+launcher wrapper may override the *path* (`SNIP_PAIRING`, `SNIP_SHARED_ENV`);
+never the value.
 
 Missing, unreadable or short credentials are a **named failure in the picker**,
-never a silent empty list — the file path and both key names are in the
-message. The URL must be `http(s)`; the token must be at least 8 characters.
+never a silent empty list — the file path(s) and the remedy are in the
+message, and no message ever carries a token. In the env file the URL must be
+`http(s)` and the token at least 8 characters; a pairing payload has the
+stricter v1 rules above.
 
 The service it talks to is four routes — `GET /v1/clips?limit=N&q=…`,
 `POST /v1/clips`, `DELETE /v1/clips/{id}`, `GET /healthz`. snip **reads**
@@ -188,13 +220,14 @@ every device loses it, there is no trash and the service has no undo. So:
 
 ## Nix
 
-The repo is a flake — the package, overlay and app are all canonical here:
+`desktop/snip/package.nix` is the package; promptshipper's root flake exposes
+it as `snip`:
 
 ```sh
-nix build github:ZacxDev/snip#snip      # or: nix run github:ZacxDev/snip
+nix build github:ZacxDev/promptshipper#snip    # or: nix run github:ZacxDev/promptshipper#snip
 # as an input, with the consumer's nixpkgs:
-#   inputs.snip.url = "github:ZacxDev/snip";
-#   inputs.snip.inputs.nixpkgs.follows = "nixpkgs";
+#   inputs.promptshipper.url = "github:ZacxDev/promptshipper";
+#   inputs.promptshipper.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
 `package.nix` reads the version out of `cmd/snip/version.go` (never a hand-held
@@ -233,7 +266,8 @@ body never deletes by inference.
 | `SNIP_ORIGIN_WINDOW` / `SNIP_ORIGIN_CLASS` | set by the WM keybind wrapper |
 | `SNIP_QUERY` / `SNIP_OPEN_LATENCY_MS` | injected by the picker into the helper |
 | `ACTIVITY_SPOOL_DIR` | fire-row spool override |
-| `SNIP_SHARED_ENV` | shared-clipboard config **path** override (default `~/.config/snip/shared.env`, mode 0600, holding `SNIP_SHARED_URL` + `SNIP_SHARED_TOKEN`). The path only — never the token value |
+| `SNIP_PAIRING` | shared-clipboard pairing-payload **path** override (default `~/.config/snip/pairing.json`, mode 0600). The path only — never the payload |
+| `SNIP_SHARED_ENV` | shared-clipboard env-file **path** override (default `~/.config/snip/shared.env`, mode 0600, holding `SNIP_SHARED_URL` + `SNIP_SHARED_TOKEN`). The path only — never the token value |
 
 State paths: the recency file is `$XDG_STATE_HOME/snip/recent.json` (else
 `~/.local/state/snip/recent.json`); fire rows go to
@@ -269,11 +303,15 @@ exactly once, so a reformatted declaration breaks every consumer's evaluation
 instead of quietly shipping a wrong version; `TestVersionDeclarationShape`
 pins the same shape in CI, so you find out one step earlier.
 
+snip is a nested Go module in a monorepo, so its tags carry the module's
+directory as a prefix (`desktop/snip/vX.Y.Z` — the form `go install …@vX.Y.Z`
+resolves). A bare `v*` tag is the server images' release, not snip's.
+
 1. **Check whether `main` has already moved past the last tag.** Nothing
    enforces this, which is why it is the step that gets skipped:
 
    ```sh
-   git log --oneline "$(git describe --tags --abbrev=0)"..main
+   git log --oneline "$(git describe --tags --abbrev=0 --match 'desktop/snip/v*')"..main -- desktop/snip
    ```
 
    Non-empty output while `buildVersion` still holds the tagged value means
@@ -285,12 +323,12 @@ pins the same shape in CI, so you find out one step earlier.
 4. Tag it to match, and push the tag:
 
    ```sh
-   git tag v0.2.0 && git push origin v0.2.0
+   git tag desktop/snip/v0.3.0 && git push origin desktop/snip/v0.3.0
    ```
 
-5. **Update the consumer, or you have shipped nothing.** devrc pins snip as a
-   flake input, so merging and tagging change nothing on any machine until
-   someone runs `nix flake update snip` there and switches. A release that
+5. **Update the consumer, or you have shipped nothing.** A desktop that pins
+   promptshipper as a flake input changes nothing until someone runs
+   `nix flake update promptshipper` there and switches. A release that
    stops at step 4 leaves the feature merged, tagged, and still absent from
    the installed binary.
 
@@ -319,8 +357,9 @@ teaches everyone to click through it.
 snip began inside the author's configuration repository
 ([innovation-upstream/devrc](https://github.com/innovation-upstream/devrc)) —
 as the espanso replacement for a nix-managed desktop — and was extracted here
-in 2026 with a fresh history. That repo still carries the nix packaging, the
-landing script and the desktop integration.
+in 2026 with a fresh history as `ZacxDev/snip`, then folded into promptshipper
+at `desktop/snip/` with that history kept (`git subtree add`). The devrc repo
+still carries the author's landing script and desktop integration.
 
 ## License
 

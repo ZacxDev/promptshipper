@@ -46,6 +46,17 @@ const MinTokenLen = 8
 type Config struct {
 	URL   string
 	Token string
+	// TokenName is how a refusal names the token's source ("clip.token in
+	// <path>" for a pairing file). Empty means the env file's KeyToken.
+	TokenName string
+}
+
+// tokenName is the label a 401 uses for the configured token.
+func (c Config) tokenName() string {
+	if c.TokenName != "" {
+		return c.TokenName
+	}
+	return KeyToken
 }
 
 // EnvPath resolves the config file: $SNIP_SHARED_ENV overrides (the launcher's
@@ -66,14 +77,63 @@ func EnvPath() (string, error) {
 	return filepath.Join(home, ".config", "snip", envFileName), nil
 }
 
-// Load reads and validates the config. Every failure names the file and the
-// remedy: the operator is standing at a picker that just told him the shared
-// view is unavailable, and the reason has to be actionable.
+// Load resolves and validates the config. There are two sources, and exactly
+// one may be in effect:
+//
+//   - the promptshipper pairing payload (pairing.go): $SNIP_PAIRING, else
+//     ~/.config/snip/pairing.json — the clip object of the payload ./setup
+//     prints, so a desktop pairs from the same artifact as the phone;
+//   - the env file: $SNIP_SHARED_ENV, else ~/.config/snip/shared.env, holding
+//     SNIP_SHARED_URL and SNIP_SHARED_TOKEN.
+//
+// An explicit override ($SNIP_PAIRING / $SNIP_SHARED_ENV) beats a default
+// path. 🔴 TWO SOURCES AT THE SAME LEVEL ARE A NAMED FAILURE, NEVER A SILENT
+// PRECEDENCE: both overrides set, or both default files present, means the
+// operator has two answers to "which store" and snip must not pick one for him
+// (a stale shared.env silently winning over a fresh pairing is exactly the
+// re-pair-after-rotate case). Every failure names the file(s) and the remedy.
 func Load() (Config, error) {
-	path, err := EnvPath()
+	pairOverride := os.Getenv("SNIP_PAIRING")
+	envOverride := os.Getenv("SNIP_SHARED_ENV")
+	switch {
+	case pairOverride != "" && envOverride != "":
+		return Config{}, fmt.Errorf("both SNIP_PAIRING (%s) and SNIP_SHARED_ENV (%s) are set — unset one",
+			pairOverride, envOverride)
+	case pairOverride != "":
+		return loadPairing(pairOverride)
+	case envOverride != "":
+		return loadEnv(envOverride)
+	}
+	pairPath, err := PairingPath()
 	if err != nil {
 		return Config{}, err
 	}
+	envPath, err := EnvPath()
+	if err != nil {
+		return Config{}, err
+	}
+	pairOK, envOK := exists(pairPath), exists(envPath)
+	switch {
+	case pairOK && envOK:
+		return Config{}, fmt.Errorf("both %s and %s exist — remove one", pairPath, envPath)
+	case pairOK:
+		return loadPairing(pairPath)
+	case envOK:
+		return loadEnv(envPath)
+	}
+	return Config{}, fmt.Errorf("no shared-clipboard config — save the pairing payload from `./setup --pairing` to %s, "+
+		"or write %s and %s into %s (mode 0600)", pairPath, KeyURL, KeyToken, envPath)
+}
+
+// exists is true when path names something Stat can see. A permission error
+// counts as present, so the loader reports it instead of skipping the file.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}
+
+// loadEnv reads and validates the env file at path.
+func loadEnv(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
