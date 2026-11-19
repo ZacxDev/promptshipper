@@ -1,0 +1,247 @@
+# promptshipper Helm chart. Both components are on by default; turn either
+# off to run one per release (e.g. one release per namespace).
+#
+# 🔴 Neither service has TLS of its own and both authenticate with a bearer
+# token. Keep them on a private network; if you enable an Ingress, put TLS on it.
+
+nameOverride: ""
+fullnameOverride: ""
+imagePullSecrets: []
+commonLabels: {}
+
+stt:
+  enabled: true
+
+  image:
+    repository: ghcr.io/zacxdev/promptshipper-stt
+    # Empty -> the chart's appVersion.
+    tag: ""
+    # Optional: pin by digest (sha256:...). Wins over tag.
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # STT_BACKEND: faster-whisper | openai | fake | cohere. `cohere` needs the
+  # GPU image (built from server/stt/Dockerfile.cohere, not yet published) —
+  # set image.repository to it and enable gpu below.
+  backend: faster-whisper
+  # STT_MODEL. Empty -> the backend's default (faster-whisper: small).
+  model: ""
+  # Plain environment variables, name -> value (STT_NO_SPEECH_MAX,
+  # STT_DEVICE, STT_UPSTREAM_URL, ...). See server/stt/README.md.
+  env: {}
+  # Full EnvVar objects, for valueFrom etc.
+  extraEnv: []
+
+  auth:
+    # Name of an existing Secret holding the bearer token(s). When set, the
+    # chart creates no Secret.
+    existingSecret: ""
+    # Key in the Secret for STT_API_TOKEN.
+    tokenKey: STT_API_TOKEN
+    # Key for STT_API_TOKENS (named extra tokens, `name:tok,name2:tok2`).
+    # Mounted with optional: true, so the key may be absent.
+    tokensKey: STT_API_TOKENS
+    # Without existingSecret: the token to put into a chart-managed Secret.
+    # Rendering FAILS when neither is given — the service never runs open.
+    token: ""
+
+  # Hugging Face token (the gated cohere model). Optional.
+  hfToken:
+    existingSecret: ""
+    key: HF_TOKEN
+
+  # The snippet catalog, mounted as a directory at /etc/snip (the path is
+  # fixed in the server). Use at most one of the three sources.
+  snippets:
+    existingConfigMap: ""
+    existingSecret: ""
+    # Inline JSON array -> a chart-managed ConfigMap.
+    content: ""
+
+  # Model cache (HF_HOME lives under it). Without persistence the model is
+  # re-downloaded on every pod start.
+  persistence:
+    enabled: true
+    # Use this PVC instead of creating one. Nothing else under persistence
+    # (size, storageClass) is read then.
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 10Gi
+    annotations: {}
+    mountPath: /models
+
+  gpu:
+    enabled: false
+    # Set as the pod's runtimeClassName when gpu is enabled. Empty -> none.
+    runtimeClassName: nvidia
+    # nvidia.com/gpu request AND limit.
+    count: 1
+    resourceName: nvidia.com/gpu
+
+  # Overrides gpu.runtimeClassName when set (also works without gpu).
+  runtimeClassName: ""
+
+  replicas: 1
+  # Recreate by default: the model cache is ReadWriteOnce and a GPU is
+  # usually exclusive, so two pods cannot overlap.
+  strategy:
+    type: Recreate
+
+  service:
+    # Empty -> <fullname>-stt. Set it to keep an existing in-cluster DNS name.
+    name: ""
+    type: ClusterIP
+    port: 8000
+    annotations: {}
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    #  - host: stt.example.com
+    #    paths: [{path: /, pathType: Prefix}]
+    tls: []
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  # Not read-only by default: compose does not run stt read-only either, and
+  # the model libraries have not been measured against a read-only root.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+
+  # First start downloads the model (~0.5 GB for `small`): up to 15 minutes.
+  startupProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 60
+  livenessProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 20
+    timeoutSeconds: 10
+    failureThreshold: 5
+  readinessProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  priorityClassName: ""
+  podAnnotations: {}
+  podLabels: {}
+
+clip:
+  enabled: true
+
+  image:
+    repository: ghcr.io/zacxdev/promptshipper-clip
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  auth:
+    existingSecret: ""
+    # Key in the Secret for CLIPSTORE_TOKEN (minimum 24 bytes, or clip exits 2).
+    tokenKey: CLIPSTORE_TOKEN
+    token: ""
+
+  # SQLite file name inside the data volume.
+  dbFile: clipstore.db
+
+  # 🔴 Holds the clipboard. A chart-created claim carries
+  # helm.sh/resource-policy: keep, so `helm uninstall` leaves it behind.
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 1Gi
+    annotations: {}
+
+  extraEnv: []
+
+  service:
+    name: ""
+    type: ClusterIP
+    port: 8139
+    annotations: {}
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    tls: []
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+  startupProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 3
+    timeoutSeconds: 5
+    failureThreshold: 20
+  livenessProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet: {path: /healthz, port: http}
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  priorityClassName: ""
+  podAnnotations: {}
+  podLabels: {}
+
+# One NetworkPolicy per enabled component, restricting ingress to its service
+# port. `from` is a list of NetworkPolicyPeer; empty -> any source, on that
+# port only. Ingress-only: egress (e.g. the model download) is not restricted.
+networkPolicy:
+  enabled: false
+  stt:
+    from: []
+  clip:
+    from: []

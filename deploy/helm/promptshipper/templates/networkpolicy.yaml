@@ -1,0 +1,29 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- range $component := list "stt" "clip" }}
+{{- $c := index $.Values $component }}
+{{- if $c.enabled }}
+{{- $ctx := dict "root" $ "component" $component "c" $c }}
+{{- $from := index $.Values.networkPolicy $component "from" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "promptshipper.componentName" $ctx }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "promptshipper.selectorLabels" $ctx | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+      {{- with $from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

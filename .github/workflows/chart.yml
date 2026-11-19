@@ -1,0 +1,113 @@
+name: chart and flake
+
+# Pull requests: lint, render and schema-validate the Helm chart, run its
+# template assertions, and `nix flake check`. A `v*` tag: package the chart
+# with the tag's version (chart version == appVersion == image tag, which
+# release.yml publishes from the same tag) and push it to GHCR as an OCI
+# artifact: oci://ghcr.io/zacxdev/charts/promptshipper.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  HELM_VERSION: v3.19.0
+  KUBECONFORM_VERSION: v0.7.0
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: kubeconform
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: helm lint
+        run: helm lint --strict deploy/helm/promptshipper --set stt.auth.existingSecret=ci-stt-auth --set clip.auth.existingSecret=ci-clip-auth
+      - name: helm template | kubeconform (several value sets)
+        run: |
+          set -euo pipefail
+          c=deploy/helm/promptshipper
+          base=(--set stt.auth.existingSecret=ci-stt-auth --set clip.auth.existingSecret=ci-clip-auth)
+          n=0
+          while IFS= read -r extra; do
+            # shellcheck disable=SC2086
+            out=$(helm template ci "$c" "${base[@]}" $extra)
+            count=$(printf '%s\n' "$out" | grep -c '^kind: ' || true)
+            [ "$count" -gt 0 ] || { echo "render produced no objects: $extra"; exit 1; }
+            printf '%s\n' "$out" | kubeconform -strict -summary -
+            n=$((n + 1))
+          done <<'SETS'
+          --set stt.enabled=true
+          --set stt.gpu.enabled=true --set stt.persistence.existingClaim=a --set clip.persistence.existingClaim=b
+          --set networkPolicy.enabled=true --set stt.ingress.enabled=true --set stt.ingress.hosts[0].host=stt.example.com --set clip.ingress.enabled=true --set clip.ingress.hosts[0].host=clip.example.com
+          --set stt.enabled=false
+          --set clip.enabled=false --set stt.snippets.existingConfigMap=cat --set stt.persistence.enabled=false
+          SETS
+          echo "validated $n renders"
+          [ "$n" -eq 5 ]
+      - name: a render without a token must fail
+        run: |
+          if helm template ci deploy/helm/promptshipper >/dev/null 2>&1; then
+            echo "rendered with no token source"; exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: template assertions
+        run: |
+          pip install pytest==8.4.2 pyyaml==6.0.3
+          python -m pytest -q -p no:cacheprovider deploy/helm/tests
+
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The module check is a NixOS VM test: it needs /dev/kvm usable by the
+      # build user and the `kvm`/`nixos-test` system features.
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+      # Builds both packages and runs the clip (go test) and stt (pytest)
+      # suites plus the NixOS module VM test.
+      - name: nix flake check
+        run: nix flake check -L --show-trace
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: package and push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/promptshipper --version "$version" --app-version "$version" -d dist
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "dist/promptshipper-${version}.tgz" oci://ghcr.io/zacxdev/charts

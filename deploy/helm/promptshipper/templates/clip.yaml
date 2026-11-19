@@ -1,0 +1,186 @@
+{{- if .Values.clip.enabled }}
+{{- $c := .Values.clip }}
+{{- $ctx := dict "root" $ "component" "clip" "c" $c }}
+{{- $name := include "promptshipper.componentName" $ctx }}
+{{- $secret := include "promptshipper.authSecretName" $ctx }}
+{{- $claim := include "promptshipper.claimName" $ctx }}
+{{- if and (not $c.auth.existingSecret) $c.auth.token }}
+{{- if lt (len $c.auth.token) 24 }}
+{{- fail "clip.auth.token must be at least 24 bytes (clip refuses a shorter one at startup)" }}
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+type: Opaque
+stringData:
+  {{ $c.auth.tokenKey }}: {{ $c.auth.token | quote }}
+{{- end }}
+{{- if and $c.persistence.enabled (not $c.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+  annotations:
+    # The clipboard database. `helm uninstall` must not take it with it.
+    helm.sh/resource-policy: keep
+    {{- with $c.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $c.persistence.accessModes | nindent 4 }}
+  {{- with $c.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $c.persistence.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+spec:
+  # 🔴 NOT CONFIGURABLE. clip is a single SQLite writer: exactly one process
+  # per database file, and Recreate so an upgrade never overlaps two pods on
+  # the same volume (a ReadWriteOnce local volume does not prevent two pods on
+  # one node from mounting it).
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "promptshipper.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "promptshipper.labels" $ctx | nindent 8 }}
+        {{- with $c.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- $podAnn := deepCopy (default dict $c.podAnnotations) }}
+      {{- if and (not $c.auth.existingSecret) $c.auth.token }}
+      {{- $_ := set $podAnn "checksum/auth" ($c.auth.token | sha256sum) }}
+      {{- end }}
+      {{- with $podAnn }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $c.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: clip
+          image: {{ include "promptshipper.image" $ctx | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          args:
+            - -addr
+            - :8139
+            - -db
+            - {{ printf "/data/%s" $c.dbFile | quote }}
+          ports:
+            - name: http
+              containerPort: 8139
+              protocol: TCP
+          env:
+            - name: CLIPSTORE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $c.auth.tokenKey }}
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $c.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if $claim }}
+          persistentVolumeClaim:
+            claimName: {{ $claim }}
+          {{- else }}
+          # persistence.enabled=false: the clipboard is LOST on every restart.
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "promptshipper.serviceName" $ctx }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+  {{- with $c.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $c.service.type }}
+  selector:
+    {{- include "promptshipper.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- include "promptshipper.ingress" $ctx }}
+{{- end }}
