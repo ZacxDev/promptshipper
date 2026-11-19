@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+# promptshipper setup — one command from a fresh clone to a running, paired server.
+#
+#   ./setup                     detect the address, generate tokens, start, verify, print the QR
+#   ./setup --host 100.101.102.103
+#   ./setup --pairing           re-print the pairing QR/payload from the existing .env
+#   ./setup --rotate            new tokens (every paired device must re-scan)
+#   ./setup --help
+#
+# Non-interactive: it never prompts. Idempotent: re-running keeps the tokens
+# and any setting you do not pass again, and only (re)starts what changed.
+#
+# Exit codes: 0 ok · 1 usage · 2 a prerequisite is missing · 3 a service did not
+# become healthy in time · 4 a service is up but rejected its own token.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+COMPOSE_DIR="${ROOT}/deploy/compose"
+ENV_FILE="${COMPOSE_DIR}/.env"
+EXAMPLE_SNIPPETS="${ROOT}/server/stt/examples/snippets.json"
+PAIRING_VERSION=1
+
+usage() {
+  cat <<'EOF'
+Usage: ./setup [options]
+
+Where the phone reaches this machine:
+  --host HOST         address the phone uses (Tailscale IP, LAN IP or DNS name).
+                      Default: kept from .env, else `tailscale ip -4`, else this
+                      machine's primary LAN IP.
+  --bind ADDR         host address to publish the ports on. Default: kept from
+                      .env, else the --host value when it is an IP (so a
+                      Tailscale host listens on the tailnet only), else 0.0.0.0.
+  --stt-port N        default 8118
+  --clip-port N       default 8139
+
+Transcription:
+  --cpu               faster-whisper on the CPU (default)
+  --gpu               the opt-in cohere backend on an NVIDIA GPU (needs HF_TOKEN
+                      in the environment; its license is not yet reviewed)
+  --backend NAME      cpu profile backend: faster-whisper | openai | fake
+  --model NAME        model name (faster-whisper default: small)
+  --upstream-url URL  for --backend openai
+
+Lifecycle:
+  --rotate            generate NEW tokens (paired devices must re-scan)
+  --no-start          write .env and seed the snippet catalog, start nothing
+  --pairing           only print the pairing QR/payload from the existing .env
+  --no-qr             print the payload without a QR code
+  --timeout SECONDS   how long to wait for health (default 1800; the first start
+                      downloads the model)
+  --env-file PATH     use PATH instead of deploy/compose/.env
+  -h, --help
+EOF
+}
+
+die() { echo "setup: $*" >&2; exit "${2:-1}"; }
+say() { echo "==> $*"; }
+
+# ---------------------------------------------------------------- arguments
+opt_host="" opt_bind="" opt_stt_port="" opt_clip_port="" opt_profile="" opt_backend=""
+opt_model="" opt_upstream="" rotate=0 start=1 pairing_only=0 qr=1 timeout=1800
+while (($#)); do
+  case "$1" in
+    --host) opt_host=${2:?--host needs a value}; shift ;;
+    --bind) opt_bind=${2:?--bind needs a value}; shift ;;
+    --stt-port) opt_stt_port=${2:?--stt-port needs a value}; shift ;;
+    --clip-port) opt_clip_port=${2:?--clip-port needs a value}; shift ;;
+    --cpu) opt_profile=cpu ;;
+    --gpu) opt_profile=gpu ;;
+    --backend) opt_backend=${2:?--backend needs a value}; shift ;;
+    --model) opt_model=${2:?--model needs a value}; shift ;;
+    --upstream-url) opt_upstream=${2:?--upstream-url needs a value}; shift ;;
+    --rotate) rotate=1 ;;
+    --no-start) start=0 ;;
+    --pairing) pairing_only=1 ;;
+    --no-qr) qr=0 ;;
+    --timeout) timeout=${2:?--timeout needs a value}; shift ;;
+    --env-file) ENV_FILE=${2:?--env-file needs a value}; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; die "unknown option: $1" ;;
+  esac
+  shift
+done
+[[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a number of seconds"
+for p in "$opt_stt_port" "$opt_clip_port"; do
+  [[ -z "$p" || ( "$p" =~ ^[0-9]+$ && p -ge 1 && p -le 65535 ) ]] || die "invalid port: $p"
+done
+case "$opt_backend" in ""|faster-whisper|openai|fake) ;; *) die "--backend must be faster-whisper, openai or fake" ;; esac
+
+# ---------------------------------------------------------------- .env I/O
+# Parsed as KEY=VALUE lines, never `source`d: a .env is data, not a script.
+declare -A cfg=()
+declare -a extra_lines=()
+MANAGED_KEYS=(COMPOSE_PROFILES PROMPTSHIPPER_HOST BIND STT_PORT CLIP_PORT STT_API_TOKEN CLIPSTORE_TOKEN
+  STT_BACKEND STT_MODEL STT_UPSTREAM_URL PULL_POLICY PROMPTSHIPPER_VERSION)
+is_managed() { local k; for k in "${MANAGED_KEYS[@]}"; do [[ "$k" == "$1" ]] && return 0; done; return 1; }
+
+if [[ -f "$ENV_FILE" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key=${BASH_REMATCH[1]} val=${BASH_REMATCH[2]}
+      if is_managed "$key"; then cfg[$key]=$val; else extra_lines+=("$line"); fi
+    fi
+  done <"$ENV_FILE"
+fi
+get() { printf '%s' "${cfg[$1]:-}"; }
+
+# ---------------------------------------------------------------- pairing
+is_ipv4() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+url_for() { # host port -> http://host:port (IPv6 literals bracketed)
+  local h=$1
+  [[ "$h" == *:* ]] && h="[$h]"
+  printf 'http://%s:%s' "$h" "$2"
+}
+pairing_payload() {
+  local name
+  name=$(hostname 2>/dev/null | head -n1 | tr -cd 'A-Za-z0-9._-' | head -c 63 || true)
+  printf '{"v":%d,"type":"promptshipper-pairing","name":"%s","stt":{"url":"%s","token":"%s"},"clip":{"url":"%s","token":"%s"}}' \
+    "$PAIRING_VERSION" "${name:-promptshipper}" \
+    "$(url_for "$(get PROMPTSHIPPER_HOST)" "$(get STT_PORT)")" "$(get STT_API_TOKEN)" \
+    "$(url_for "$(get PROMPTSHIPPER_HOST)" "$(get CLIP_PORT)")" "$(get CLIPSTORE_TOKEN)"
+}
+print_qr() {
+  local payload=$1
+  ((qr)) || return 0
+  if command -v qrencode >/dev/null 2>&1; then
+    printf '%s' "$payload" | qrencode -t ANSIUTF8 -m 2
+  elif command -v docker >/dev/null 2>&1; then
+    printf '%s' "$payload" | docker run --rm -i alpine:3.20 sh -c \
+      'apk add -q --no-progress libqrencode-tools >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 2' \
+      || echo "(could not render a QR code; install qrencode, or paste the payload below)"
+  else
+    echo "(install qrencode to see a QR code; the payload below is the same thing)"
+  fi
+}
+print_pairing() {
+  local payload
+  [[ -n "$(get STT_API_TOKEN)" && -n "$(get CLIPSTORE_TOKEN)" && -n "$(get PROMPTSHIPPER_HOST)" ]] \
+    || die "no complete configuration in ${ENV_FILE}; run ./setup first"
+  payload=$(pairing_payload)
+  echo
+  echo "Pair your phone: open the app, choose \"Pair with a server\" and scan this code."
+  print_qr "$payload"
+  echo "STT server:  $(url_for "$(get PROMPTSHIPPER_HOST)" "$(get STT_PORT)")"
+  echo "Clip server: $(url_for "$(get PROMPTSHIPPER_HOST)" "$(get CLIP_PORT)")"
+  echo "The code contains your tokens: treat it like a password."
+  echo "PAIRING_PAYLOAD=${payload}"
+}
+
+if ((pairing_only)); then
+  print_pairing
+  exit 0
+fi
+
+# ---------------------------------------------------------------- prerequisites
+compose=()
+if ((start)); then
+  command -v docker >/dev/null 2>&1 || die "docker is not installed (https://docs.docker.com/engine/install/)" 2
+  if docker compose version >/dev/null 2>&1; then
+    compose=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    compose=(docker-compose)
+  else
+    die "docker compose is not installed (the compose plugin, or docker-compose)" 2
+  fi
+  docker info >/dev/null 2>&1 || die "the docker daemon is not reachable (is it running? is this user in the docker group?)" 2
+  command -v curl >/dev/null 2>&1 || die "curl is required for the health check" 2
+fi
+
+# ---------------------------------------------------------------- settings
+detect_host() {
+  local ip=""
+  if command -v tailscale >/dev/null 2>&1; then
+    ip=$(tailscale ip -4 2>/dev/null | head -n1 || true)
+  fi
+  if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)
+  fi
+  if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+  fi
+  # Only an IPv4 literal counts as detected: a tool that printed something
+  # else (an error, a name) must not become the address in the QR code.
+  is_ipv4 "$ip" && printf '%s' "$ip"
+  return 0
+}
+
+host=${opt_host:-$(get PROMPTSHIPPER_HOST)}
+[[ -n "$host" ]] || host=$(detect_host)
+[[ -n "$host" ]] || die "could not detect this machine's address; pass --host <ip-or-name>"
+[[ "$host" =~ ^[A-Za-z0-9.:-]+$ ]] || die "--host must be an IP address or a DNS name: $host"
+cfg[PROMPTSHIPPER_HOST]=$host
+
+bind=${opt_bind:-$(get BIND)}
+if [[ -z "$bind" || ( -n "$opt_host" && -z "$opt_bind" ) ]]; then
+  # A new --host re-derives the bind address unless --bind was given too.
+  if is_ipv4 "$host"; then bind=$host; else bind=0.0.0.0; fi
+fi
+cfg[BIND]=$bind
+cfg[STT_PORT]=${opt_stt_port:-$(get STT_PORT)}
+cfg[STT_PORT]=${cfg[STT_PORT]:-8118}
+cfg[CLIP_PORT]=${opt_clip_port:-$(get CLIP_PORT)}
+cfg[CLIP_PORT]=${cfg[CLIP_PORT]:-8139}
+[[ "${cfg[STT_PORT]}" != "${cfg[CLIP_PORT]}" ]] || die "--stt-port and --clip-port must differ"
+
+profile=${opt_profile:-$(get COMPOSE_PROFILES)}
+profile=${profile:-cpu}
+[[ "$profile" == cpu || "$profile" == gpu ]] || die "COMPOSE_PROFILES in ${ENV_FILE} must be cpu or gpu"
+cfg[COMPOSE_PROFILES]=$profile
+cfg[STT_BACKEND]=${opt_backend:-$(get STT_BACKEND)}
+cfg[STT_BACKEND]=${cfg[STT_BACKEND]:-faster-whisper}
+[[ -n "$opt_model" ]] && cfg[STT_MODEL]=$opt_model
+[[ -n "$opt_upstream" ]] && cfg[STT_UPSTREAM_URL]=$opt_upstream
+if [[ "${cfg[STT_BACKEND]}" == openai && -z "$(get STT_UPSTREAM_URL)" && "$profile" == cpu ]]; then
+  die "--backend openai needs --upstream-url http://host:port"
+fi
+cfg[PULL_POLICY]=$(get PULL_POLICY); cfg[PULL_POLICY]=${cfg[PULL_POLICY]:-build}
+cfg[PROMPTSHIPPER_VERSION]=$(get PROMPTSHIPPER_VERSION); cfg[PROMPTSHIPPER_VERSION]=${cfg[PROMPTSHIPPER_VERSION]:-latest}
+
+new_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+  fi
+}
+rotated=0
+for key in STT_API_TOKEN CLIPSTORE_TOKEN; do
+  if ((rotate)) || [[ -z "$(get "$key")" ]]; then
+    cfg[$key]=$(new_token)
+    rotated=1
+  fi
+  [[ "${cfg[$key]}" =~ ^[A-Za-z0-9._~-]{24,}$ ]] \
+    || die "${key} in ${ENV_FILE} must be at least 24 URL-safe characters; run ./setup --rotate"
+done
+
+# ---------------------------------------------------------------- write .env
+mkdir -p "$(dirname "$ENV_FILE")"
+tmp=$(mktemp "${ENV_FILE}.XXXXXX")
+{
+  echo "# Written by ./setup. Re-run ./setup to change it (your tokens are kept;"
+  echo "# --rotate replaces them). Contains secrets: never commit or share this file."
+  for key in "${MANAGED_KEYS[@]}"; do
+    [[ -n "${cfg[$key]:-}" ]] && printf '%s=%s\n' "$key" "${cfg[$key]}"
+  done
+  if ((${#extra_lines[@]})); then
+    echo "# --- your own settings (kept by ./setup) ---"
+    printf '%s\n' "${extra_lines[@]}"
+  fi
+} >"$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$ENV_FILE"
+say "wrote ${ENV_FILE}$( ((rotated)) && echo ' (new tokens)')"
+
+snip_dir="$(dirname "$ENV_FILE")/snippets"
+if [[ ! -f "${snip_dir}/snippets.json" ]]; then
+  mkdir -p "$snip_dir"
+  cp "$EXAMPLE_SNIPPETS" "${snip_dir}/snippets.json"
+  say "seeded ${snip_dir}/snippets.json with the example catalog — edit it to make it yours"
+fi
+
+if ((!start)); then
+  say "--no-start: nothing started"
+  print_pairing
+  exit 0
+fi
+
+# ---------------------------------------------------------------- start
+dc() { "${compose[@]}" --project-directory "$COMPOSE_DIR" -f "${COMPOSE_DIR}/docker-compose.yml" --env-file "$ENV_FILE" "$@"; }
+if [[ "$profile" == gpu ]]; then active=stt-gpu inactive=stt; else active=stt inactive=stt-gpu; fi
+# Switching cpu<->gpu: stop the other variant (they publish the same port).
+COMPOSE_PROFILES=cpu,gpu dc rm --stop --force "$inactive" >/dev/null 2>&1 || true
+build=()
+[[ "${cfg[PULL_POLICY]}" == build ]] && build=(--build)
+say "starting clip and ${active} (profile ${profile}); the first build takes a few minutes"
+COMPOSE_PROFILES=$profile dc up -d "${build[@]}" clip "$active"
+
+# ---------------------------------------------------------------- verify
+probe_host=$bind
+[[ "$probe_host" == 0.0.0.0 || "$probe_host" == "::" ]] && probe_host=127.0.0.1
+stt_probe=$(url_for "$probe_host" "${cfg[STT_PORT]}")
+clip_probe=$(url_for "$probe_host" "${cfg[CLIP_PORT]}")
+
+wait_healthy() { # name url
+  local name=$1 url=$2 waited=0 code
+  while :; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${url}/healthz" || true)
+    [[ "$code" == 200 ]] && { say "${name} is healthy (${url})"; return 0; }
+    if ((waited >= timeout)); then
+      echo "setup: ${name} did not become healthy within ${timeout}s (last status: ${code:-none})." >&2
+      echo "       Look at:  docker compose --project-directory ${COMPOSE_DIR} logs --tail 50 ${3}" >&2
+      exit 3
+    fi
+    ((waited > 0 && waited % 30 == 0)) && say "waiting for ${name} (${waited}s; the first start downloads the model)..."
+    sleep 2
+    waited=$((waited + 2))
+  done
+}
+wait_healthy clip "$clip_probe" clip
+wait_healthy stt "$stt_probe" "$active"
+
+check_auth() { # name url token
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $3" "$2" || true)
+  [[ "$code" == 200 ]] || { echo "setup: $1 is up but answered ${code} to its own token at $2" >&2; exit 4; }
+}
+check_auth clip "${clip_probe}/v1/clips?limit=1" "${cfg[CLIPSTORE_TOKEN]}"
+check_auth stt "${stt_probe}/v1/snippets" "${cfg[STT_API_TOKEN]}"
+say "both services accept their tokens"
+
+if [[ "$probe_host" != "$host" ]]; then
+  if ! curl -s -o /dev/null --max-time 5 "$(url_for "$host" "${cfg[STT_PORT]}")/healthz"; then
+    echo "setup: warning: the phone's address $(url_for "$host" "${cfg[STT_PORT]}") is not reachable from this machine." >&2
+    echo "       Check --host / --bind (the ports are published on ${bind})." >&2
+  fi
+fi
+
+print_pairing

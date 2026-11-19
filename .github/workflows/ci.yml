@@ -1,0 +1,124 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  private-data-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nothing private in the tree
+        run: scripts/check-no-private.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The gate's own positive and negative controls
+        run: |
+          pip install pytest==8.4.2
+          python -m pytest -q -p no:cacheprovider tests/test_check_no_private.py
+
+  clip:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/clip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/clip/go.mod
+          cache-dependency-path: server/clip/go.sum
+      - name: vet + test (CGO off, as the image is built)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+  stt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/stt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ffmpeg (the decoder the server shells out to)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+      - name: pytest on the fake backend (no model download)
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q -p no:cacheprovider
+
+  setup-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck setup scripts/check-no-private.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: setup's behaviour (fake docker, stub services)
+        run: |
+          pip install pytest==8.4.2
+          python -m pytest -q -p no:cacheprovider tests/test_setup.py
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (cpu and gpu profiles)
+        run: |
+          for p in cpu gpu; do
+            COMPOSE_PROFILES=$p docker compose -f deploy/compose/docker-compose.yml \
+              --env-file deploy/compose/.env.example config -q
+            COMPOSE_PROFILES=$p docker compose -f deploy/compose/docker-compose.yml \
+              --env-file deploy/compose/.env.example config --services
+          done
+
+  # The real thing: ./setup on a clean runner, building both images, with the
+  # fake STT backend so no model is downloaded. Then one transcription and one
+  # clip round trip through the running stack.
+  smoke:
+    runs-on: ubuntu-latest
+    needs: [stt, clip, setup-script, compose]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ./setup
+        run: ./setup --host 127.0.0.1 --backend fake --no-qr --timeout 600
+      - name: transcribe and clip through the running stack
+        run: |
+          set -a; . deploy/compose/.env; set +a
+          python3 - <<'PY'
+          import io, math, wave
+          buf = io.BytesIO()
+          with wave.open(buf, "wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+              w.writeframes(b"".join(int(8000 * math.sin(i / 8)).to_bytes(2, "little", signed=True) for i in range(16000)))
+          open("/tmp/tone.wav", "wb").write(buf.getvalue())
+          PY
+          out=$(curl -sf -H "Authorization: Bearer $STT_API_TOKEN" -F file=@/tmp/tone.wav -F language=en \
+            "http://127.0.0.1:$STT_PORT/v1/audio/transcriptions")
+          echo "$out"
+          echo "$out" | grep -q '"text":"fake transcript"'
+          curl -sf -X POST -H "Authorization: Bearer $CLIPSTORE_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"body":"ci smoke","device":"ci"}' "http://127.0.0.1:$CLIP_PORT/v1/clips"
+          curl -sf -H "Authorization: Bearer $CLIPSTORE_TOKEN" "http://127.0.0.1:$CLIP_PORT/v1/clips?q=smoke" \
+            | grep -q '"body":"ci smoke"'
+      - name: re-running ./setup keeps the tokens
+        run: |
+          before=$(sha256sum deploy/compose/.env)
+          ./setup --no-qr --timeout 120
+          [ "$before" = "$(sha256sum deploy/compose/.env)" ]
+      - name: logs on failure
+        if: failure()
+        run: docker compose --project-directory deploy/compose logs --tail 100
