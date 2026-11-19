@@ -81,4 +81,7 @@ don't paste it into a chat, a ticket or a public log. If it leaks, run
 `./setup --rotate` and re-pair every device.
 
 `./setup --pairing` re-prints the code from the existing configuration without
-changing anything.
+changing anything. `./setup --qr-png <path>` (alone or with `--pairing`) writes
+the same QR code to a PNG file with mode 0600 and prints **only the path** —
+neither the payload nor a token reaches stdout or stderr. That is the mode an AI
+agent installing on the user's behalf must use.

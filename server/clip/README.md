@@ -4,8 +4,8 @@ The server half of the cross-device shared clipboard. Highlight text on any
 device, it is on every other device. The Android app captures to it and reads
 from it; the desktop `snip` tool and the MCP server (later phases) do too.
 
-Deployed by `deploy/compose/` (see the repo's `AGENTS.md`); the binary and
-image are still called `clipstore`.
+Deployed by `deploy/compose/` (see the repo's `AGENTS.md`). The image is
+`ghcr.io/zacxdev/promptshipper-clip`; the binary inside it is still `clipstore`.
 
 ## Shape
 

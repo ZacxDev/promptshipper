@@ -4,6 +4,7 @@
 #   ./setup                     detect the address, generate tokens, start, verify, print the QR
 #   ./setup --host 100.101.102.103
 #   ./setup --pairing           re-print the pairing QR/payload from the existing .env
+#   ./setup --qr-png FILE       write the QR to FILE (0600) and print only the path
 #   ./setup --rotate            new tokens (every paired device must re-scan)
 #   ./setup --help
 #
@@ -11,7 +12,8 @@
 # and any setting you do not pass again, and only (re)starts what changed.
 #
 # Exit codes: 0 ok · 1 usage · 2 a prerequisite is missing · 3 a service did not
-# become healthy in time · 4 a service is up but rejected its own token.
+# become healthy in time · 4 a service is up but rejected its own token ·
+# 5 --qr-png could not write the image.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -47,6 +49,9 @@ Lifecycle:
   --no-start          write .env and seed the snippet catalog, start nothing
   --pairing           only print the pairing QR/payload from the existing .env
   --no-qr             print the payload without a QR code
+  --qr-png PATH       write the pairing QR to PATH as a PNG (mode 0600) and print
+                      only the path — never the tokens. Use this when an agent
+                      runs setup. Works with --pairing too.
   --timeout SECONDS   how long to wait for health (default 1800; the first start
                       downloads the model)
   --env-file PATH     use PATH instead of deploy/compose/.env
@@ -59,7 +64,7 @@ say() { echo "==> $*"; }
 
 # ---------------------------------------------------------------- arguments
 opt_host="" opt_bind="" opt_stt_port="" opt_clip_port="" opt_profile="" opt_backend=""
-opt_model="" opt_upstream="" rotate=0 start=1 pairing_only=0 qr=1 timeout=1800
+opt_model="" opt_upstream="" rotate=0 start=1 pairing_only=0 qr=1 qr_png="" timeout=1800
 while (($#)); do
   case "$1" in
     --host) opt_host=${2:?--host needs a value}; shift ;;
@@ -75,6 +80,7 @@ while (($#)); do
     --no-start) start=0 ;;
     --pairing) pairing_only=1 ;;
     --no-qr) qr=0 ;;
+    --qr-png) qr_png=${2:?--qr-png needs a path}; shift ;;
     --timeout) timeout=${2:?--timeout needs a value}; shift ;;
     --env-file) ENV_FILE=${2:?--env-file needs a value}; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -83,6 +89,10 @@ while (($#)); do
   shift
 done
 [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a number of seconds"
+if [[ -n "$qr_png" ]]; then
+  [[ ! -d "$qr_png" ]] || die "--qr-png wants a file path, not a directory"
+  [[ -d "$(dirname "$qr_png")" ]] || die "--qr-png: directory $(dirname "$qr_png") does not exist"
+fi
 for p in "$opt_stt_port" "$opt_clip_port"; do
   [[ -z "$p" || ( "$p" =~ ^[0-9]+$ && p -ge 1 && p -le 65535 ) ]] || die "invalid port: $p"
 done
@@ -134,11 +144,39 @@ print_qr() {
     echo "(install qrencode to see a QR code; the payload below is the same thing)"
   fi
 }
+write_qr_png() { # payload path — the payload goes only into the file, never to a stream
+  local payload=$1 path=$2 tmp
+  tmp=$(umask 077 && mktemp "${path}.XXXXXX") || die "cannot create a file next to ${path}" 5
+  if command -v qrencode >/dev/null 2>&1; then
+    printf '%s' "$payload" | qrencode -t PNG -m 2 -s 8 -o "$tmp" 2>/dev/null || true
+  elif command -v docker >/dev/null 2>&1; then
+    printf '%s' "$payload" | docker run --rm -i alpine:3.20 sh -c \
+      'apk add -q --no-progress libqrencode-tools >/dev/null 2>&1 && qrencode -t PNG -m 2 -s 8 -o -' \
+      >"$tmp" 2>/dev/null || true
+  fi
+  # A PNG starts with these 8 bytes; anything else (empty, an error page) is a failure.
+  if [[ "$(head -c 8 "$tmp" | od -An -tx1 | tr -d ' \n')" != 89504e470d0a1a0a ]]; then
+    rm -f "$tmp"
+    die "could not render the pairing QR as a PNG (install qrencode)" 5
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$path"
+}
 print_pairing() {
   local payload
   [[ -n "$(get STT_API_TOKEN)" && -n "$(get CLIPSTORE_TOKEN)" && -n "$(get PROMPTSHIPPER_HOST)" ]] \
     || die "no complete configuration in ${ENV_FILE}; run ./setup first"
   payload=$(pairing_payload)
+  if [[ -n "$qr_png" ]]; then
+    # 🔴 For agent-run installs: only the PATH is printed. The payload holds
+    # both tokens and must not reach stdout/stderr, which an agent reads.
+    write_qr_png "$payload" "$qr_png"
+    echo
+    echo "Pairing QR code written to: ${qr_png}"
+    echo "Open that image and scan it with the app (\"Pair with a server\"). It contains"
+    echo "your tokens: treat it like a password, and delete it once you have paired."
+    return 0
+  fi
   echo
   echo "Pair your phone: open the app, choose \"Pair with a server\" and scan this code."
   print_qr "$payload"

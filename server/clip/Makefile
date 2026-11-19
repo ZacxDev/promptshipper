@@ -7,7 +7,7 @@
 # race detector only ever runs from this file — if you touch anything concurrent
 # (there is almost nothing: SetMaxOpenConns(1) serialises the store), run it.
 VERSION ?= dev
-IMAGE   ?= promptshipper-clip:$(VERSION)
+IMAGE   ?= ghcr.io/zacxdev/promptshipper-clip:$(VERSION)
 
 .PHONY: build test vet race fmt image clean
 

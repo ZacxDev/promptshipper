@@ -31,9 +31,14 @@ app pairs with them by scanning a QR code that `./setup` prints
 3. **Run setup from the repository root:**
 
    ```sh
-   ./setup                       # auto-detects: Tailscale IP, else the LAN IP
-   ./setup --host 100.x.y.z      # or say exactly which address the phone uses
+   ./setup --qr-png ~/promptshipper-pairing.png                    # auto-detects: Tailscale IP, else the LAN IP
+   ./setup --qr-png ~/promptshipper-pairing.png --host 100.x.y.z   # or say which address the phone uses
    ```
+
+   🔴 **Always pass `--qr-png` when you (an agent) run it.** It writes the
+   pairing QR code to that file (mode 0600) and prints only the path, so the
+   tokens never appear in your output. Without it, setup prints the tokens to
+   the terminal for a human to scan.
 
    Useful flags (`./setup --help` lists all):
 
@@ -50,16 +55,17 @@ app pairs with them by scanning a QR code that `./setup` prints
    on any failure (see *Troubleshooting*). The first run builds two images and
    downloads the model: expect several minutes.
 
-4. **Hand over pairing.** On success `./setup` prints a QR code and a line
-   `PAIRING_PAYLOAD={...}`. 🔴 **The payload contains both bearer tokens. Do not
-   repeat it, summarise it or paste it into the conversation.** Tell the user:
+4. **Hand over pairing.** Tell the user where the image is, e.g.:
 
-   > Open a terminal in this folder, run `./setup --pairing`, and scan the code
-   > with the promptshipper app ("Pair with a server").
+   > Your pairing code is in `~/promptshipper-pairing.png`. Open it on this
+   > computer and scan it with the promptshipper app ("Pair with a server"),
+   > then delete the file — it contains your access tokens.
 
-   `./setup --pairing` re-prints the code and changes nothing. If the user
-   cannot scan (no camera, remote shell), they can copy the `PAIRING_PAYLOAD`
-   JSON from *their own* terminal into the app.
+   🔴 **Do not open, describe, upload or copy the image's contents, and never
+   print `deploy/compose/.env`** — the code holds both bearer tokens. If the
+   file is lost, `./setup --pairing --qr-png <path>` writes it again and changes
+   nothing else. If the user cannot open an image (remote shell), they can run
+   `./setup --pairing` in *their own* terminal to see the code as text.
 
 5. **Report** what you ran, the two server URLs (no tokens), and the result of
    the verification below.
@@ -118,9 +124,10 @@ into the QR code. They default to the same IP.
 | exit 2 | docker / compose / curl missing, or the daemon unreachable | install or start Docker; add the user to the `docker` group (they must log out and in) |
 | exit 3, `stt did not become healthy` | usually still downloading the model, or out of memory | `docker compose --project-directory deploy/compose logs --tail 50 stt`; re-run with a larger `--timeout`, or a smaller `--model` |
 | exit 3, `clip did not become healthy` | clip refused to start | `... logs clip`; a token problem prints `FATAL: $CLIPSTORE_TOKEN` — run `./setup --rotate` |
+| exit 5, `could not render the pairing QR as a PNG` | no `qrencode`, and the docker fallback could not fetch it | install `qrencode`, then `./setup --pairing --qr-png <path>` |
 | exit 4, `answered 401 to its own token` | `.env` was edited while the containers kept old values | re-run `./setup` (it recreates containers whose settings changed) |
 | `port is already allocated` | something else holds 8118/8139 | `./setup --stt-port 18118 --clip-port 18139`, then re-pair |
-| containers not running after a reboot, `cannot assign requested address` in `docker compose ... up` | Docker can start before Tailscale has its IP, and a port published on the tailnet address cannot bind until it exists (not yet observed in this project's testing — listed because it follows from binding to the tailnet IP) | `docker compose --project-directory deploy/compose up -d`; to fix it for good, order the docker service after tailscaled (systemd: `After=tailscaled.service`) |
+| containers not running after a reboot, `cannot assign requested address` in `docker compose ... up` | **Known risk of the tailnet-only bind** (the default when Tailscale is present): Docker can start before Tailscale has its IP, and a port published on the tailnet address cannot bind until that address exists. Not yet observed in this project's testing | `docker compose --project-directory deploy/compose up -d`; to fix it for good, order the docker service after tailscaled (systemd: `After=tailscaled.service`) |
 | warning `the phone's address ... is not reachable from this machine` | `--host` and `--bind` disagree | pass both explicitly, or only `--host` |
 | the app says "unreliable" on real speech | the threshold does not suit this voice/mic | add `STT_NO_SPEECH_MAX=<higher>` (or `off`) to `deploy/compose/.env`, re-run `./setup` |
 | snippets missing in the app | the catalog is empty or invalid JSON | edit `deploy/compose/snippets/snippets.json` (format: `server/stt/README.md`); changes are live |

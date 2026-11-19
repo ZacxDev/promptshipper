@@ -10,7 +10,7 @@ model):
     set -a; . deploy/compose/.env; set +a
     python3 server/stt/check_tokens.py
 
-Exit 0: prints the count and each entry's NAME and SCOPE. Exit 2: prints the
+Exit 0: prints the count and each entry's NAME. Exit 2: prints the
 server's own refusal, which names the entry by POSITION and never its content.
 No token is ever printed.
 """
@@ -26,7 +26,7 @@ import sys
 APP = pathlib.Path(__file__).resolve().with_name("app.py")
 FUNCS = {"parse_tokens"}
 CLASSES = {"TokenConfigError"}
-CONSTS = {"LEGACY_TOKEN_NAME", "TOKEN_NAME_RE", "SCOPE_INTERNAL", "SCOPE_PUBLIC", "TOKEN_SCOPES"}
+CONSTS = {"LEGACY_TOKEN_NAME", "TOKEN_NAME_RE"}
 
 
 def load(app_path=APP):
@@ -61,8 +61,8 @@ def main(environ=os.environ, out=sys.stdout, err=sys.stderr) -> int:
         print("ok, but ZERO tokens: every authenticated route would answer 503", file=out)
         return 0
     print(f"ok: {len(table)} token(s)", file=out)
-    for name, scope, _digest in table:
-        print(f"  {name}  {scope}", file=out)
+    for name, _digest in table:
+        print(f"  {name}", file=out)
     return 0
 
 

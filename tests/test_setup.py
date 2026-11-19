@@ -16,6 +16,8 @@ import socket
 import stat
 import subprocess
 import threading
+import struct
+import zlib
 
 import pytest
 
@@ -293,3 +295,80 @@ def test_a_dead_docker_daemon_is_exit_2(tree):
     write_exe(tree[1] / "docker", 'case "$*" in info*) exit 1;; esac; exit 0\n')
     r = run(tree, "--host", "127.0.0.1", "--no-qr")
     assert r.returncode == 2 and "daemon is not reachable" in r.stderr
+
+
+# ------------------------------------------------------------------ --qr-png
+
+
+def link_real(tree_, tool):
+    real = shutil.which(tool)
+    assert real, f"{tool} is required for this test (CI installs it)"
+    (tree_[1] / tool).symlink_to(real)
+
+
+def assert_valid_png(data):
+    """Signature, chunk CRCs, IHDR first, IEND last, IDAT inflates to the size IHDR implies."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, chunks = 8, []
+    while pos < len(data):
+        (n,) = struct.unpack(">I", data[pos:pos + 4])
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]
+        (crc,) = struct.unpack(">I", data[pos + 8 + n:pos + 12 + n])
+        assert zlib.crc32(kind + body) == crc, kind
+        chunks.append((kind, body))
+        pos += 12 + n
+    assert chunks[0][0] == b"IHDR" and chunks[-1][0] == b"IEND"
+    w, h, depth, ctype = struct.unpack(">IIBB", chunks[0][1][:10])
+    assert w > 20 and h > 20
+    raw = zlib.decompress(b"".join(b for k, b in chunks if k == b"IDAT"))
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+    assert len(raw) == h * (1 + (w * channels * depth + 7) // 8)
+
+
+def test_qr_png_writes_a_private_valid_png_and_prints_only_the_path(tree, tmp_path):
+    link_real(tree, "qrencode")
+    out = tmp_path / "pair.png"
+    r = run(tree, "--no-start", "--host", "100.64.1.2", "--qr-png", str(out))
+    assert r.returncode == 0, r.stderr
+    _, cfg = envfile(tree)
+    streams = r.stdout + r.stderr
+    for key in ("STT_API_TOKEN", "CLIPSTORE_TOKEN"):
+        assert cfg[key] not in streams, f"{key} leaked to stdout/stderr"
+    assert "PAIRING_PAYLOAD" not in streams
+    assert f"Pairing QR code written to: {out}" in r.stdout
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert_valid_png(out.read_bytes())
+
+
+def test_qr_png_decodes_to_the_exact_pairing_payload(tree, tmp_path):
+    link_real(tree, "qrencode")
+    zbar = shutil.which("zbarimg")
+    assert zbar, "zbarimg (zbar-tools) is required for this test (CI installs it)"
+    out = tmp_path / "pair.png"
+    assert run(tree, "--no-start", "--host", "100.64.1.2", "--qr-png", str(out)).returncode == 0
+    decoded = subprocess.run([zbar, "--raw", "-q", str(out)], capture_output=True, text=True, check=True).stdout.strip()
+    _, cfg = envfile(tree)
+    p = json.loads(decoded)
+    assert p["v"] == 1 and p["stt"]["token"] == cfg["STT_API_TOKEN"] and p["clip"]["token"] == cfg["CLIPSTORE_TOKEN"]
+
+
+def test_qr_png_with_pairing_reprints_to_the_file_and_never_the_tokens(tree, tmp_path):
+    run(tree, "--no-start", "--host", "100.64.1.2", "--no-qr")
+    link_real(tree, "qrencode")
+    out = tmp_path / "again.png"
+    r = run(tree, "--pairing", "--qr-png", str(out))
+    assert r.returncode == 0, r.stderr
+    _, cfg = envfile(tree)
+    assert cfg["STT_API_TOKEN"] not in r.stdout + r.stderr
+    assert cfg["CLIPSTORE_TOKEN"] not in r.stdout + r.stderr
+    assert_valid_png(out.read_bytes())
+
+
+def test_qr_png_without_a_renderer_fails_and_leaves_no_file(tree, tmp_path):
+    (tree[1] / "docker").unlink()
+    out = tmp_path / "pair.png"
+    r = run(tree, "--no-start", "--host", "100.64.1.2", "--qr-png", str(out))
+    assert r.returncode == 5 and "could not render" in r.stderr
+    assert not out.exists() and not list(tmp_path.glob("pair.png.*"))
+    _, cfg = envfile(tree)
+    assert cfg["STT_API_TOKEN"] not in r.stdout + r.stderr

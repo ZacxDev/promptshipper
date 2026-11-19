@@ -316,31 +316,19 @@ def snip_catalog():
 
 
 # ---------------------------------------------------------------------------
-# bearer tokens: one legacy token plus any number of NAMED, revocable ones
+# bearer tokens: one default token plus any number of NAMED, revocable ones
 # ---------------------------------------------------------------------------
 #
 # STT_API_TOKEN   one token (what ./setup generates). Logged as caller "default".
-# STT_API_TOKENS  comma-separated, accepted IN ADDITION:
-#                   name:token          internal scope
-#                   name:internal:token internal scope, spelled out
-#                   name:public:token   also accepted through a "public entry"
-#                 Revoking one caller = deleting its entry and restarting.
-#
-# THE PUBLIC ENTRY (advanced, off unless you build it): a reverse proxy that
-# exposes this service more widely can SET the header `X-STT-Entry` on every
-# request it forwards. A request carrying that header (any value, any number of
-# times) is accepted only with a PUBLIC-scoped token. The header can only ever
-# NARROW what a token may do, which is why the app may trust it at all.
+# STT_API_TOKENS  comma-separated `name:token` entries, accepted IN ADDITION.
+#                 Everything after the FIRST colon is the token. Revoking one
+#                 caller = deleting its entry and restarting.
 #
 # 🔴 A MALFORMED STT_API_TOKENS REFUSES BOOT; it is never partly applied.
 # ⚠ ZERO TOKENS IS NOT A BOOT FAILURE: /healthz stays up and every
 # authenticated route answers 503 naming STT_API_TOKEN — closed, not open.
 LEGACY_TOKEN_NAME = "default"
 TOKEN_NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
-SCOPE_INTERNAL = "internal"
-SCOPE_PUBLIC = "public"
-TOKEN_SCOPES = frozenset({SCOPE_INTERNAL, SCOPE_PUBLIC})
-ENTRY_HEADER = "x-stt-entry"
 
 
 class TokenConfigError(ValueError):
@@ -349,61 +337,52 @@ class TokenConfigError(ValueError):
 
 
 def parse_tokens(legacy: str, named: str) -> tuple:
-    """`((name, scope, sha256(token)), ...)`, or raise TokenConfigError.
+    """`((name, sha256(token)), ...)`, or raise TokenConfigError.
 
     Only DIGESTS are kept, so comparisons are equal-length and no plaintext
-    token lives in the table. With one colon an entry is `name:token`; with two
-    or more the second segment must be a scope (`name:internal:a:b` -> `a:b`).
+    token lives in the table.
     """
     entries = []
     if legacy:
-        entries.append((LEGACY_TOKEN_NAME, SCOPE_INTERNAL, legacy))
+        entries.append((LEGACY_TOKEN_NAME, legacy))
     if named.strip():
         for i, raw in enumerate(named.split(","), start=1):
             entry = raw.strip()
             if not entry:
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} is empty (stray comma?)")
-            name, sep, rest = entry.partition(":")
+            name, sep, token = entry.partition(":")
             if not sep:
-                raise TokenConfigError(f"STT_API_TOKENS entry {i} is not `name[:scope]:token`")
+                raise TokenConfigError(f"STT_API_TOKENS entry {i} is not `name:token`")
             if not TOKEN_NAME_RE.fullmatch(name):
                 raise TokenConfigError(
                     f"STT_API_TOKENS entry {i} has an invalid name (want [a-z0-9-]{{1,32}})"
-                )
-            scope, sep, token = rest.partition(":")
-            if not sep:
-                scope, token = SCOPE_INTERNAL, rest
-            elif scope not in TOKEN_SCOPES:
-                raise TokenConfigError(
-                    f"STT_API_TOKENS entry {i} ({name}) has an unknown scope "
-                    f"(want one of {', '.join(sorted(TOKEN_SCOPES))})"
                 )
             if not token:
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} ({name}) has an empty token")
             if any(c.isspace() for c in token):
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} ({name}) has whitespace in its token")
-            entries.append((name, scope, token))
-    names = [n for n, _, _ in entries]
+            entries.append((name, token))
+    names = [n for n, _ in entries]
     dup_names = sorted({n for n in names if names.count(n) > 1})
     if dup_names:
         raise TokenConfigError(f"duplicate token name(s): {', '.join(dup_names)}")
     by_token = {}
-    for name, _, token in entries:
+    for name, token in entries:
         by_token.setdefault(token, []).append(name)
     shared = sorted("+".join(ns) for ns in by_token.values() if len(ns) > 1)
     if shared:
         raise TokenConfigError(f"the same token is configured under several names: {', '.join(shared)}")
-    return tuple((name, scope, hashlib.sha256(token.encode()).digest()) for name, scope, token in entries)
+    return tuple((name, hashlib.sha256(token.encode()).digest()) for name, token in entries)
 
 
 def match_token(presented: str, tokens: tuple):
-    """`(name, scope)` of the matching entry, else None. No early exit: every
-    digest is compared on every call."""
+    """The NAME of the matching entry, else None. No early exit: every digest
+    is compared on every call."""
     digest = hashlib.sha256(presented.encode("utf-8", "surrogatepass")).digest()
     matched = None
-    for name, scope, want in tokens:
+    for name, want in tokens:
         if hmac.compare_digest(digest, want):
-            matched = (name, scope)
+            matched = name
     return matched
 
 
@@ -420,21 +399,12 @@ def require_token(request: Request, creds: HTTPAuthorizationCredentials = Depend
     """Authenticate; return the caller's NAME. The name is logged, the token never."""
     if not TOKENS:
         raise HTTPException(503, NO_TOKEN_DETAIL)
-    hit = None if creds is None else match_token(creds.credentials, TOKENS)
-    if hit is None:
+    name = None if creds is None else match_token(creds.credentials, TOKENS)
+    if name is None:
         log.warning("auth refused (%s bearer) %s %s",
                     "missing" if creds is None else "invalid", request.method, request.url.path)
         raise HTTPException(401, "invalid or missing bearer token")
-    name, scope = hit
-    # getlist, never get: `get` returns only the FIRST occurrence, so an empty
-    # header ahead of the proxy's would read as internal.
-    public = len(request.headers.getlist(ENTRY_HEADER)) > 0
-    if public and scope != SCOPE_PUBLIC:
-        log.warning("auth refused (scope) caller=%s via public entry %s %s",
-                    name, request.method, request.url.path)
-        raise HTTPException(403, "this token is not permitted through the public entry")
-    log.info("auth caller=%s%s %s %s", name, " via public entry" if public else "",
-             request.method, request.url.path)
+    log.info("auth caller=%s %s %s", name, request.method, request.url.path)
     return name
 
 
