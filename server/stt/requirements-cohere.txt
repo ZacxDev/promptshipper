@@ -1,0 +1,14 @@
+# GPU image (Dockerfile.cohere). These pins are the combination the upstream
+# private deployment of this server ran the Cohere model on (read from a running
+# container on 2026-11-03), plus httpx for the shared backends package.
+# ⚠ This image has NOT been built or run from this repository yet.
+fastapi==0.143.3
+uvicorn==0.54.0
+python-multipart==0.0.32
+# Load-bearing although nothing imports it: transformers' Cohere ASR feature
+# extractor requires librosa to build its mel filter bank.
+librosa==1.0.0
+numpy==2.4.3
+transformers==5.20.1
+huggingface-hub==2.2.0
+httpx==0.28.1

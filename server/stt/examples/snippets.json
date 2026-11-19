@@ -1,0 +1,44 @@
+[
+  {
+    "label": "Review this diff",
+    "body": "Review the diff below for correctness bugs first, then readability. List findings by severity and quote the exact lines.",
+    "search_terms": ["review", "diff", "pr", "code"],
+    "category": "coding"
+  },
+  {
+    "label": "Explain like a reviewer",
+    "body": "Explain what this code does, what assumptions it makes, and what input would break it.",
+    "search_terms": ["explain", "understand", "assumptions"],
+    "category": "coding"
+  },
+  {
+    "label": "Write the test first",
+    "body": "Before changing any code, write a test that fails because of this bug. Show me it failing, then fix the code and show it passing.",
+    "search_terms": ["test", "tdd", "regression", "bug"],
+    "category": "coding"
+  },
+  {
+    "label": "Summarize for a busy reader",
+    "body": "Summarize the text below in five bullet points for someone with two minutes. Keep every number and name exact.",
+    "search_terms": ["summary", "tldr", "bullets"],
+    "category": "writing"
+  },
+  {
+    "label": "Tighten this paragraph",
+    "body": "Rewrite the paragraph below to be about half as long without losing any facts. Keep my tone.",
+    "search_terms": ["shorten", "edit", "concise", "rewrite"],
+    "category": "writing"
+  },
+  {
+    "label": "Plan before acting",
+    "body": "Do not change anything yet. Read the relevant files, then give me a numbered plan with the risks of each step, and wait for my go-ahead.",
+    "search_terms": ["plan", "steps", "careful"],
+    "category": "agents"
+  },
+  {
+    "label": "Report what you verified",
+    "body": "When you are done, list what you actually ran and observed, separately from what you only expect to work.",
+    "search_terms": ["verify", "report", "evidence", "done"],
+    "category": "agents"
+  }
+]
