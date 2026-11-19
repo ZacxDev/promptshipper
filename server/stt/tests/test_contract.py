@@ -194,10 +194,10 @@ def test_backend_request_error_is_400_and_unavailable_is_a_RETRYABLE_503(make_cl
     assert "STT_API_TOKEN" not in r.json()["detail"]
 
 
-def test_the_unauthenticated_routes_are_exactly_healthz_and_root(make_client):
+def test_the_only_unauthenticated_route_is_healthz(make_client):
     c, _, _ = make_client()
     assert c.get("/healthz").status_code == 200
-    assert c.get("/").status_code == 200
+    assert c.get("/").status_code == 401
     assert c.get("/v1/snippets").status_code == 401
     assert upload(c, tone(), headers={}).status_code == 401
     assert upload(c, tone(), headers=auth("wrong-token-wrong-token-wrong")).status_code == 401

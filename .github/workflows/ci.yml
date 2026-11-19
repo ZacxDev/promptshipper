@@ -85,6 +85,13 @@ jobs:
             COMPOSE_PROFILES=$p docker compose -f deploy/compose/docker-compose.yml \
               --env-file deploy/compose/.env.example config --services
           done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: every documented setting reaches the containers; ports bind exactly BIND
+        run: |
+          pip install pytest==8.4.2
+          python -m pytest -q -p no:cacheprovider tests/test_compose.py
 
   # The real thing: ./setup on a clean runner, building both images, with the
   # fake STT backend so no model is downloaded. Then one transcription and one

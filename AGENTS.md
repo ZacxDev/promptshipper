@@ -21,8 +21,9 @@ app pairs with them by scanning a QR code that `./setup` prints
 
 1. **Prerequisites.** Docker Engine with the compose plugin
    (`docker compose version` works), the daemon running, and the user able to
-   run `docker` without sudo. `curl`. Optional: `qrencode` (for the QR code;
-   otherwise `./setup` renders it in a throwaway container), `tailscale`.
+   run `docker` without sudo. `curl`. **`qrencode`** — required for
+   `--qr-png` (Debian/Ubuntu `apt install qrencode`, macOS `brew install
+   qrencode`). Optional: `tailscale`.
    Do not install system packages without the user's agreement.
 
 2. **Decide the network path** (see *Networking* below). Ask the user only if
@@ -107,14 +108,23 @@ fine on a private network and **not** fine on the internet.
   unencrypted, so only do this on a network the user trusts. It does not work
   away from home.
 * **Other VPNs / mesh overlays** (WireGuard, Nebula, ZeroTier): pass the overlay IP
-  as `--host`.
+  as `--host`. IPv6 overlay addresses (e.g. `fd7a:…`) work too.
+* **A DNS name** (e.g. a Tailscale MagicDNS name) as `--host` is resolved: setup
+  binds that address and puts the **address** in the QR code (the app only
+  allows plain HTTP to private addresses). If the name resolves to a public
+  address, setup refuses.
 * 🔴 **Never expose these ports to the public internet** — no router port
   forward, no `--bind 0.0.0.0` on a VPS — unless a TLS-terminating reverse proxy
   is in front of them and the user explicitly asks for it. Without TLS the
   tokens travel in cleartext.
 
-`--bind` decides which host address Docker publishes on; `--host` is what goes
-into the QR code. They default to the same IP.
+`--bind` decides which host address Docker publishes on; `--host` decides the
+address in the QR code. By default the bind is the `--host` address **only if it
+is private** (RFC 1918, Tailscale/CGNAT `100.64.0.0/10`, IPv6 ULA, loopback);
+setup **never** picks `0.0.0.0` on its own, and refuses a public address unless
+`--bind` is passed explicitly (`--bind 0.0.0.0` works, with a loud warning). A
+bind you set yourself — by `--bind` or by editing `BIND=` in `.env` — is kept on
+every re-run.
 
 ## Troubleshooting
 
@@ -124,7 +134,9 @@ into the QR code. They default to the same IP.
 | exit 2 | docker / compose / curl missing, or the daemon unreachable | install or start Docker; add the user to the `docker` group (they must log out and in) |
 | exit 3, `stt did not become healthy` | usually still downloading the model, or out of memory | `docker compose --project-directory deploy/compose logs --tail 50 stt`; re-run with a larger `--timeout`, or a smaller `--model` |
 | exit 3, `clip did not become healthy` | clip refused to start | `... logs clip`; a token problem prints `FATAL: $CLIPSTORE_TOKEN` — run `./setup --rotate` |
-| exit 5, `could not render the pairing QR as a PNG` | no `qrencode`, and the docker fallback could not fetch it | install `qrencode`, then `./setup --pairing --qr-png <path>` |
+| exit 1, `... is a public address` | `--host` (or what its name resolves to) is not a private-network address | use the Tailscale/LAN address as `--host`; only pass `--bind` explicitly if a TLS proxy fronts the services |
+| exit 1, `could not resolve --host NAME` | the name does not resolve on this machine | pass the IP address instead |
+| exit 5, `--qr-png needs qrencode` / `could not render` | `qrencode` is missing or failed | install `qrencode`, then `./setup --pairing --qr-png <path>` |
 | exit 4, `answered 401 to its own token` | `.env` was edited while the containers kept old values | re-run `./setup` (it recreates containers whose settings changed) |
 | `port is already allocated` | something else holds 8118/8139 | `./setup --stt-port 18118 --clip-port 18139`, then re-pair |
 | containers not running after a reboot, `cannot assign requested address` in `docker compose ... up` | **Known risk of the tailnet-only bind** (the default when Tailscale is present): Docker can start before Tailscale has its IP, and a port published on the tailnet address cannot bind until that address exists. Not yet observed in this project's testing | `docker compose --project-directory deploy/compose up -d`; to fix it for good, order the docker service after tailscaled (systemd: `After=tailscaled.service`) |

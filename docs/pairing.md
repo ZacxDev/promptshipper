@@ -46,6 +46,10 @@ producer side.
   and `/healthz` itself, so a path in the base would break every request. (The
   app already refuses a clip base URL with a path; the same rule applies to both.)
 * An IPv6 host is bracketed: `http://[fd7a:115c:a1e0::1]:8118`.
+* **The v1 producer always emits an IP literal**, never a DNS name: `./setup`
+  resolves a name given as `--host` and puts the address in the payload, because
+  a name cannot prove to the app that it is private (rule below). It warns when
+  the address is not private, since a compliant app will refuse that pairing.
 * The producer emits `http://` because the servers have no TLS of their own and
   are meant to be reached over a private network. A consumer that restricts
   cleartext should allow it only for private ranges (RFC 1918, the CGNAT range

@@ -142,9 +142,79 @@ def test_the_tailscale_address_is_preferred_and_binds_the_tailnet_only(tree):
     assert (cfg["PROMPTSHIPPER_HOST"], cfg["BIND"]) == ("100.64.1.2", "100.64.1.2")
 
 
-def test_a_dns_name_binds_all_interfaces(tree):
-    assert run(tree, "--no-start", "--host", "box.example.ts.net", "--no-qr").returncode == 0
+def fake_getent(tree_, answers):
+    """`getent ahostsv4|ahostsv6 NAME` -> canned answers {(family, name): addr}."""
+    cases = "".join(f'  "{fam} {name}") echo "{addr}  STREAM {name}";;\n' for (fam, name), addr in answers.items())
+    write_exe(tree_[1] / "getent", f'case "$1 $2" in\n{cases}  *) exit 2;;\nesac\n')
+
+
+def test_a_private_dns_name_binds_its_address_and_pairs_by_address(tree):
+    fake_getent(tree, {("ahostsv4", "box.example.ts.net"): "100.70.1.9"})
+    r = run(tree, "--no-start", "--host", "box.example.ts.net", "--no-qr")
+    assert r.returncode == 0, r.stderr
+    _, cfg = envfile(tree)
+    assert (cfg["PROMPTSHIPPER_HOST"], cfg["BIND"]) == ("box.example.ts.net", "100.70.1.9")
+    # docs/pairing.md: plain HTTP only to private addresses, so the QR carries the address.
+    assert payload_of(r.stdout)["stt"]["url"] == "http://100.70.1.9:8118"
+
+
+def test_a_dns_name_never_silently_binds_every_interface(tree):
+    fake_getent(tree, {("ahostsv4", "vps.example.com"): "203.0.113.7"})
+    r = run(tree, "--no-start", "--host", "vps.example.com", "--no-qr")
+    assert r.returncode == 1 and "public address" in r.stderr and "--bind" in r.stderr
+    assert not (tree[0] / "deploy" / "compose" / ".env").exists()
+
+
+def test_an_unresolvable_dns_name_is_refused(tree):
+    r = run(tree, "--no-start", "--host", "nowhere.invalid", "--no-qr")
+    assert r.returncode == 1 and "could not resolve" in r.stderr
+
+
+def test_a_public_ip_host_is_refused_without_an_explicit_bind(tree):
+    r = run(tree, "--no-start", "--host", "203.0.113.7", "--no-qr")
+    assert r.returncode == 1 and "public address" in r.stderr
+
+
+def test_an_explicit_wildcard_bind_is_allowed_but_loud(tree):
+    r = run(tree, "--no-start", "--host", "192.168.1.20", "--bind", "0.0.0.0", "--no-qr")
+    assert r.returncode == 0, r.stderr
     assert envfile(tree)[1]["BIND"] == "0.0.0.0"
+    assert "EVERY network interface" in r.stderr
+
+
+def test_an_ipv6_ula_host_binds_that_address(tree):
+    r = run(tree, "--no-start", "--host", "fd7a:115c:a1e0::9", "--no-qr")
+    assert r.returncode == 0, r.stderr
+    assert envfile(tree)[1]["BIND"] == "fd7a:115c:a1e0::9"
+
+
+def test_a_hand_set_bind_survives_a_rerun_with_a_new_host(tree):
+    run(tree, "--no-start", "--host", "192.168.1.20", "--bind", "192.168.1.5", "--no-qr")
+    assert run(tree, "--no-start", "--host", "192.168.1.30", "--no-qr").returncode == 0
+    _, cfg = envfile(tree)
+    assert (cfg["PROMPTSHIPPER_HOST"], cfg["BIND"]) == ("192.168.1.30", "192.168.1.5")
+
+
+def test_a_bind_edited_into_env_by_hand_survives_a_rerun(tree):
+    run(tree, "--no-start", "--host", "192.168.1.20", "--no-qr")
+    p, _ = envfile(tree)
+    p.write_text(re.sub(r"BIND=.*\n(BIND_AUTO=1\n)?", "BIND=192.168.1.5\n", p.read_text()))
+    assert run(tree, "--no-start", "--host", "192.168.1.30", "--no-qr").returncode == 0
+    assert envfile(tree)[1]["BIND"] == "192.168.1.5"
+
+
+def test_an_auto_bind_follows_a_new_host(tree):
+    run(tree, "--no-start", "--host", "192.168.1.20", "--no-qr")
+    assert run(tree, "--no-start", "--host", "192.168.1.30", "--no-qr").returncode == 0
+    assert envfile(tree)[1]["BIND"] == "192.168.1.30"
+
+
+def test_snippets_are_seeded_where_compose_mounts_them_whatever_the_env_file(tree, tmp_path):
+    elsewhere = tmp_path / "conf" / "my.env"
+    elsewhere.parent.mkdir()
+    assert run(tree, "--no-start", "--host", "192.168.1.20", "--env-file", str(elsewhere), "--no-qr").returncode == 0
+    assert (tree[0] / "deploy" / "compose" / "snippets" / "snippets.json").is_file()
+    assert not (elsewhere.parent / "snippets").exists()
 
 
 def test_no_detectable_address_is_an_error_naming_the_flag(tree):
@@ -364,11 +434,45 @@ def test_qr_png_with_pairing_reprints_to_the_file_and_never_the_tokens(tree, tmp
     assert_valid_png(out.read_bytes())
 
 
-def test_qr_png_without_a_renderer_fails_and_leaves_no_file(tree, tmp_path):
-    (tree[1] / "docker").unlink()
+def test_qr_png_without_qrencode_fails_with_an_install_hint(tree, tmp_path):
+    out = tmp_path / "pair.png"
+    r = run(tree, "--no-start", "--host", "100.64.1.2", "--qr-png", str(out))
+    assert r.returncode == 5 and "needs qrencode" in r.stderr and "apt install qrencode" in r.stderr
+    assert not out.exists()
+
+
+def test_qr_png_with_a_broken_renderer_fails_and_leaves_no_file(tree, tmp_path):
+    write_exe(tree[1] / "qrencode", "cat >/dev/null; exit 0\n")  # writes nothing
     out = tmp_path / "pair.png"
     r = run(tree, "--no-start", "--host", "100.64.1.2", "--qr-png", str(out))
     assert r.returncode == 5 and "could not render" in r.stderr
     assert not out.exists() and not list(tmp_path.glob("pair.png.*"))
     _, cfg = envfile(tree)
     assert cfg["STT_API_TOKEN"] not in r.stdout + r.stderr
+
+
+# ------------------------------------------------------------------ no secrets in argv, no network renderer
+
+
+def test_tokens_never_reach_a_command_line(tree, stubs):
+    log = tree[0].parent / "curl-argv.log"
+    real = shutil.which("curl")
+    (tree[1] / "curl").unlink()
+    write_exe(tree[1] / "curl", f'printf "%s\\n" "$*" >> {log}\nexec {real} "$@"\n')
+    r = start(tree, stubs)
+    assert r.returncode == 0, r.stdout + r.stderr
+    _, cfg = envfile(tree)
+    argv = log.read_text()
+    assert "/v1/snippets" in argv and "/v1/clips" in argv  # the instrument saw the auth checks
+    assert cfg["STT_API_TOKEN"] not in argv and cfg["CLIPSTORE_TOKEN"] not in argv
+
+
+def test_no_qrencode_never_pipes_the_payload_into_a_container(tree):
+    r = run(tree, "--no-start", "--host", "192.168.1.20")
+    assert r.returncode == 0
+    assert "install qrencode" in r.stdout
+    log = tree[2]
+    assert not log.exists() or "alpine" not in log.read_text()
+    r = run(tree, "--pairing", "--qr-png", str(tree[0] / "p.png"))
+    assert r.returncode == 5 and "qrencode" in r.stderr
+    assert not log.exists() or "alpine" not in log.read_text()

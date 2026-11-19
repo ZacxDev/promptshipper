@@ -10,7 +10,7 @@ pick from. FastAPI, one process. Deployed by `deploy/compose/` (see the repo's
 | | auth | |
 |---|---|---|
 | `GET /healthz` | none | `200 {"ok":true,"backend":…,"device":…}` once the model is loaded; `503` before (first start downloads the model) |
-| `GET /` | none | service, backend and model name |
+| `GET /` | bearer | service, backend and model name |
 | `GET /v1/snippets` | bearer | the mounted catalog's bytes, `ETag` + `If-None-Match` → `304`; a named `503` when it is missing, malformed or empty — never an empty `200` |
 | `POST /v1/audio/transcriptions` | bearer | multipart: `file` (any container ffmpeg reads — ogg/opus, aac/m4a, webm, wav, mp3), `language` (bare code, default `en`), `punctuation` (bool, default true) |
 
@@ -55,6 +55,7 @@ It needs an NVIDIA GPU and the NVIDIA container toolkit.
 | `STT_NO_SPEECH_MAX` | per backend | `unreliable` fires when `no_speech_prob` is above it; `off` disables the rule |
 | `STT_AVG_LOGPROB_MIN` | off | `unreliable` fires when `avg_logprob` is below it |
 | `STT_MAX_AUDIO_SECONDS` | `3600` | longer uploads are `413` |
+| `STT_MAX_UPLOAD_BYTES` | `STT_MAX_AUDIO_SECONDS` × 32000 + 1 MiB | the largest upload body accepted (`413` above it), enforced **before** the body is read, for both a declared `Content-Length` and a chunked body. The token is also checked before the body is read, so an unauthenticated caller cannot make the server spool anything |
 | `HF_HOME` | `/models/hf` | model cache; compose keeps it on the `stt-models` volume |
 
 The snippet catalog path is fixed at **`/etc/snip/snippets.json`** (deliberately

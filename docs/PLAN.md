@@ -37,7 +37,7 @@ Defaults chosen by the planner (change by editing this table):
 |---|---|---|
 | App ID | `dev.zacx.promptshipper` | reverse-DNS of a domain the operator owns |
 | Quickstart STT backend | CPU faster-whisper (e.g. speaches) | runs on any box; GPU is an opt-in profile |
-| Cohere Transcribe | optional backend **only if its license permits** — check before shipping | redistribution |
+| Cohere Transcribe | **decided 2026-11-19:** Apache-2.0 per its Hugging Face model card (gated download) — shipped as an opt-in GPU backend, not in the GHCR release | redistribution |
 | Private network | docs recommend Tailscale; Nebula as advanced | easiest path for strangers |
 | Registry | GHCR for images and the OCI Helm chart | public, free |
 
