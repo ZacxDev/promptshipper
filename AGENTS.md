@@ -139,8 +139,9 @@ Tokens leaked or a device lost: `./setup --rotate`, then re-pair every device.
 * Don't commit or print `deploy/compose/.env` — it holds the tokens.
 * Don't run `./setup --rotate` unless the user wants every device re-paired.
 * Don't enable the `--gpu` profile (the `cohere` backend) on your own initiative:
-  it needs an NVIDIA GPU, a Hugging Face token for a gated model, and its
-  license has not been reviewed by this project.
+  it needs an NVIDIA GPU, the NVIDIA container toolkit, and a Hugging Face token
+  for a gated model whose terms the user must accept themselves (see
+  `server/stt/README.md`).
 * Don't change the published ports to `0.0.0.0` on an internet-facing machine.
 
 ## Uninstall

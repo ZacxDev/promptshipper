@@ -23,24 +23,35 @@ No TLS: run it on a private network (see `AGENTS.md`, *Networking*).
 | `STT_BACKEND` | image | runs on | notes |
 |---|---|---|---|
 | `faster-whisper` (default) | `Dockerfile` | CPU (or CUDA with `STT_DEVICE=cuda`) | `STT_MODEL` default `small` (~0.5 GB, downloaded at first start); `base`/`tiny` for weak machines |
-| `cohere` | `Dockerfile.cohere` | NVIDIA GPU | **opt-in; license not yet reviewed — see below.** Gated model: needs `HF_TOKEN` |
+| `cohere` | `Dockerfile.cohere` | NVIDIA GPU | **opt-in** (`./setup --gpu`); gated model download — see below |
 | `openai` | `Dockerfile` | anywhere | passthrough to any OpenAI-compatible upstream: `STT_UPSTREAM_URL` (+ `STT_UPSTREAM_TOKEN`, `STT_UPSTREAM_MODEL`, `STT_UPSTREAM_FORMAT`) |
 | `fake` | `Dockerfile` | anywhere | no model; answers `STT_FAKE_TEXT`. For tests and smoke-testing a deploy only |
 
 Each backend's module docstring (`backends/*.py`) lists its own variables.
 
-> 🔴 **Cohere Transcribe licensing is an open question.** The `cohere` backend
-> loads `CohereLabs/cohere-transcribe-03-2026` from the Hugging Face Hub, where
-> it is gated behind accepting its terms. This repository ships only the loader
-> code, never weights. Whether we may advertise or recommend it has **not been
-> decided**; until it is, it is not mentioned in user-facing docs beyond this note.
+### The `cohere` backend (opt-in)
+
+It loads `CohereLabs/cohere-transcribe-03-2026` from the Hugging Face Hub. The
+model is licensed **Apache-2.0** per its Hugging Face model card (`license:
+apache-2.0` in the Hub metadata, read 2026-11-19). This repository ships only
+the loader code, never the weights, and the GPU image is not published to GHCR —
+compose builds it locally.
+
+The download is **gated**. Before the first start:
+
+1. Sign in to huggingface.co, open the model page and accept its terms.
+2. Create an access token (Settings → Access Tokens, *read* scope).
+3. Put it in `deploy/compose/.env` as `HF_TOKEN=...` (or export `HF_TOKEN`
+   before running `./setup --gpu`).
+
+It needs an NVIDIA GPU and the NVIDIA container toolkit.
 
 ## Common configuration
 
 | | default | |
 |---|---|---|
 | `STT_API_TOKEN` | — | the bearer token (`./setup` generates it). With no token configured every authenticated route answers `503 server has no STT_API_TOKEN configured`, and the app treats that 503 as permanent |
-| `STT_API_TOKENS` | — | extra named tokens, `name:token,name2:token2`, each revocable on its own. Validate with `python3 check_tokens.py` before a restart: a malformed list refuses boot |
+| `STT_API_TOKENS` | — | extra named tokens, `name:token,name2:token2`, each revocable on its own; `name:public:token` marks one usable through the public entry (below). Validate with `python3 check_tokens.py` before a restart: a malformed list refuses boot |
 | `STT_NO_SPEECH_MAX` | per backend | `unreliable` fires when `no_speech_prob` is above it; `off` disables the rule |
 | `STT_AVG_LOGPROB_MIN` | off | `unreliable` fires when `avg_logprob` is below it |
 | `STT_MAX_AUDIO_SECONDS` | `3600` | longer uploads are `413` |
@@ -49,6 +60,24 @@ Each backend's module docstring (`backends/*.py`) lists its own variables.
 The snippet catalog path is fixed at **`/etc/snip/snippets.json`** (deliberately
 not configurable). Mount a *directory* there so edits are picked up without a
 restart.
+
+### Optional: the public entry
+
+For exposing **one locked-down token** through a reverse proxy (for instance a
+TLS proxy reachable from outside your private network) while every other token
+stays private-network-only:
+
+* give that caller a public-scoped entry: `STT_API_TOKENS=phone:public:<token>`
+  (internal entries are `name:token`, or spelled out `name:internal:token`);
+* configure the proxy to **set (overwrite)** the header `X-STT-Entry: public` on
+  every request it forwards.
+
+A request carrying `X-STT-Entry` (any value, empty included, any number of
+times) is accepted **only** with a public-scoped token; an internal token gets
+`403 this token is not permitted through the public entry`. Requests without the
+header are unaffected. The header can only narrow what a token may do, so a
+client that forges it only restricts itself. Without such a proxy the feature
+is inert, and `./setup` does not set one up. Pinned by `tests/test_public_entry.py`.
 
 ## Response contract
 

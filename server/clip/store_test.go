@@ -1070,24 +1070,22 @@ func TestDDLDeclaresTrigramFailsSafeTowardsRebuilding(t *testing.T) {
 	}
 }
 
-// 🔴 SCHEMA LEDGER. Any external tool that verifies a backup of clipstore.db
-// (an integrity script, a restore check) has to know which tables and triggers
-// a healthy database carries — and the triggers are the ENTIRE synchronisation
+// 🔴 SCHEMA LEDGER. Nothing in this repository reads clipstore.db's schema
+// from outside today. This pins it for the phase-6 backup cross-check, when the
+// maintainer's deployment moves onto this repo (docs/PLAN.md phase 6) and its
+// backup verifier checks against it: a verifier has to know which tables and
+// triggers a healthy database carries, and the triggers are the ENTIRE synchronisation
 // mechanism between `clips` and its FTS5 index, so a restore that loses one
-// leaves search silently stale. This pins the exact object set as LITERALS, in
+// leaves search silently stale. The exact object set is pinned as LITERALS, in
 // BOTH directions: a set that GROWS (a new shadow table, a new sync trigger) is
 // as much a contract change as one that shrinks, and it must be made here on
-// purpose.
+// purpose — and mirrored in that verifier once it exists.
 //
 // The expected sets are written out rather than read back from sqlite_master,
 // because a ledger derived from the thing it checks asserts that SQLite equals
 // itself. Measured when the tokenizer moved to trigram: trigram and unicode61
 // produce an IDENTICAL shadow-table set, and `('integrity-check', 1)` runs
 // clean under both.
-//
-// (In the private deployment this service was extracted from, the same sets
-// lived in a backup script and a cross-language test parsed them out of it.
-// That script is not part of this repository, so the sets live here.)
 func TestTheSchemaLedgerIsExactlyTheseObjects(t *testing.T) {
 	wantTables := map[string]bool{
 		"clips": true, "clips_fts": true, "clips_fts_config": true,

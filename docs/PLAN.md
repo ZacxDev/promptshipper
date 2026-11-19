@@ -1,6 +1,6 @@
 # promptshipper — open-source extraction plan
 
-Status: **private until launch (phase 6)**. Decided by the operator 2026-11-19.
+Status: **public since 2026-11-19** (operator decision: free CI, build in public). Pre-release until launch (phase 7).
 
 ## What it is
 

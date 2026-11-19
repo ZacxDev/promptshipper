@@ -39,7 +39,7 @@ Where the phone reaches this machine:
 Transcription:
   --cpu               faster-whisper on the CPU (default)
   --gpu               the opt-in cohere backend on an NVIDIA GPU (needs HF_TOKEN
-                      in the environment; its license is not yet reviewed)
+                      for the gated model; see server/stt/README.md)
   --backend NAME      cpu profile backend: faster-whisper | openai | fake
   --model NAME        model name (faster-whisper default: small)
   --upstream-url URL  for --backend openai
