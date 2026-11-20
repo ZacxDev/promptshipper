@@ -12,6 +12,9 @@ pass: e.g. the GPU count is 3, never the default 1.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -126,6 +129,57 @@ def test_existing_secret_renders_no_secret_and_uses_its_name_and_keys():
     for comp in ("stt", "clip"):
         ann = one(docs, "Deployment", comp)["spec"]["template"]["metadata"].get("annotations") or {}
         assert "checksum/auth" not in ann
+
+
+def test_existing_secret_wins_over_an_inline_token_for_both_components():
+    docs = render(*inline_tokens(), *existing_secrets())
+    assert of_kind(docs, "Secret") == []
+    assert env(docs, "stt")["STT_API_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == "legacy-stt-secret"
+    assert env(docs, "clip")["CLIPSTORE_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == "legacy-clip-secret"
+
+
+def test_short_inline_stt_token_refuses_to_render():
+    err = render("clip.enabled=false", "stt.auth.token=only-23-bytes-long-xxxx", expect_fail=True)
+    assert "stt.auth.token must be at least 24 bytes" in err
+
+
+def _derivations(token: str) -> set[str]:
+    """Strings that would leak the token, or let it be confirmed offline."""
+    raw = token.encode()
+    out = {token, base64.b64encode(raw).decode()}
+    for algo in ("md5", "sha1", "sha224", "sha256", "sha384", "sha512"):
+        digest = hashlib.new(algo, raw).hexdigest()
+        out |= {digest, digest[:8]}  # also a truncated hash (e.g. a name suffix)
+    # every 8-character window of the token itself
+    out |= {token[i : i + 8] for i in range(len(token) - 7)}
+    return out
+
+
+def test_no_non_secret_object_carries_the_token_or_any_hash_of_it():
+    docs = render(*inline_tokens(), "stt.snippets.content=[]")
+    secrets = of_kind(docs, "Secret")
+    assert len(secrets) == 2  # positive control: the tokens ARE rendered, in Secrets
+    assert any(TOKEN_STT in json.dumps(d) for d in secrets)
+    leaks = []
+    for d in docs:
+        if d["kind"] == "Secret":
+            continue
+        text = json.dumps(d)
+        for token in (TOKEN_STT, TOKEN_CLIP):
+            leaks += [(d["kind"], d["metadata"]["name"], x) for x in _derivations(token) if x in text]
+    assert leaks == []
+
+
+@pytest.mark.parametrize("component", ["stt", "clip"])
+def test_pod_template_has_no_checksum_of_the_auth_secret(component):
+    ann = one(render(*inline_tokens()), "Deployment", component)["spec"]["template"]["metadata"].get("annotations") or {}
+    assert not any(k.startswith("checksum/") for k in ann), ann
+
+
+def test_pod_annotations_still_reach_the_pod_template():
+    docs = render(*inline_tokens(), "clip.podAnnotations.team=clipboard", "stt.podAnnotations.team=voice")
+    for comp, want in (("clip", "clipboard"), ("stt", "voice")):
+        assert one(docs, "Deployment", comp)["spec"]["template"]["metadata"]["annotations"] == {"team": want}
 
 
 # --- persistence --------------------------------------------------------------
@@ -255,6 +309,30 @@ def test_snippets_existing_configmap_is_mounted_at_etc_snip():
     mounts = {m["name"]: m for m in container(docs, "stt")["volumeMounts"]}
     assert mounts["snippets"]["mountPath"] == "/etc/snip"
     assert of_kind(docs, "ConfigMap") == []
+
+
+def test_inline_snippets_become_a_configmap_keyed_snippets_json_and_are_mounted():
+    catalog = '[{"label":"L","body":"B","search_terms":[],"category":"c"}]'
+    docs = render(*inline_tokens(), "stt.snippets.content=" + catalog.replace(",", "\\,"))
+    (cm,) = of_kind(docs, "ConfigMap")
+    assert cm["data"] == {"snippets.json": catalog}
+    assert volume(docs, "stt", "snippets")["configMap"]["name"] == cm["metadata"]["name"]
+
+
+def test_snippets_existing_secret_is_mounted_by_its_own_name():
+    docs = render(*inline_tokens(), "stt.snippets.existingSecret=catalog-in-a-secret")
+    assert volume(docs, "stt", "snippets")["secret"]["secretName"] == "catalog-in-a-secret"
+    assert of_kind(docs, "ConfigMap") == []
+
+
+def test_hf_token_comes_from_its_secret_and_key():
+    docs = render(*inline_tokens(), "stt.hfToken.existingSecret=hf-creds", "stt.hfToken.key=hub-token")
+    assert env(docs, "stt")["HF_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "hf-creds",
+        "key": "hub-token",
+        "optional": True,
+    }
+    assert "HF_TOKEN" not in env(render(*inline_tokens()), "stt")
 
 
 def test_two_snippet_sources_refuse_to_render():

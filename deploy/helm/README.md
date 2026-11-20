@@ -11,8 +11,9 @@ helm install ps oci://ghcr.io/zacxdev/charts/promptshipper --version 0.1.0 \
   --set clip.auth.existingSecret=promptshipper-tokens
 ```
 
-The chart is published to GHCR from every `v*` tag
-(`.github/workflows/chart.yml`), with the same version as the images.
+The chart is published to GHCR from every `v*` tag by
+`.github/workflows/release.yml`, with the same version as the images, and only
+after every image built and pushed.
 
 🔴 **Neither server has TLS of its own.** Keep the Services cluster-internal or
 on a private network. If you enable an Ingress, terminate TLS on it.
@@ -24,7 +25,7 @@ chart never deploys an open service.
 
 | | values | Secret key (default) |
 |---|---|---|
-| stt bearer token | `stt.auth.existingSecret` | `stt.auth.tokenKey` = `STT_API_TOKEN` |
+| stt bearer token (≥ 24 bytes inline) | `stt.auth.existingSecret` | `stt.auth.tokenKey` = `STT_API_TOKEN` |
 | stt named extra tokens (optional key) | same Secret | `stt.auth.tokensKey` = `STT_API_TOKENS` |
 | clip bearer token (≥ 24 bytes) | `clip.auth.existingSecret` | `clip.auth.tokenKey` = `CLIPSTORE_TOKEN` |
 
@@ -34,9 +35,19 @@ kubectl -n promptshipper create secret generic promptshipper-tokens \
   --from-literal=CLIPSTORE_TOKEN="$(openssl rand -hex 32)"
 ```
 
-`<component>.auth.token` puts an inline token into a chart-managed Secret
-instead; that writes it into your values and Helm release history, so prefer
-`existingSecret`.
+🔴 **The `tokenKey` must exist in the Secret.** It is mounted as a required
+key, so a missing key leaves the pod in `CreateContainerConfigError` rather than
+starting without a token. Only `stt.auth.tokensKey` is optional.
+
+`<component>.auth.token` (at least 24 bytes) puts an inline token into a
+chart-managed Secret instead. That writes it into your values and Helm release
+history, so prefer `existingSecret`.
+
+**Changing a token does not restart the pod by itself.** The chart deliberately
+puts no checksum of the token in the pod template, because anyone who can
+`get pods` could read it. After changing a token, either inline or in your own
+Secret, restart the component:
+`kubectl rollout restart deploy/<fullname>-<stt|clip>` (`<fullname>` is `<release>-promptshipper` unless overridden).
 
 ## Values that matter
 
@@ -53,7 +64,7 @@ instead; that writes it into your values and Helm release history, so prefer
 | `<component>.service.name` / `.port` | `<fullname>-<component>`, 8000 / 8139 | set to keep an existing in-cluster DNS name |
 | `<component>.ingress.*` | off | a plain `networking.k8s.io/v1` Ingress |
 | `<component>.nodeSelector`, `.affinity`, `.tolerations`, `.resources`, `.priorityClassName` | — | as usual |
-| `networkPolicy.enabled` | `false` | one ingress policy per component, limited to its port; `networkPolicy.<component>.from` lists the allowed peers and must be non-empty for every enabled component (rendering fails otherwise: an empty list would isolate nothing) |
+| `networkPolicy.enabled` | `false` | one ingress policy per component, limited to its port; `networkPolicy.<component>.from` lists the allowed peers and must be non-empty for every enabled component (rendering fails otherwise: an empty list would isolate nothing). With an Ingress enabled, include the ingress controller's pods/namespace in `from`, or the Ingress cannot reach the Service |
 
 `clip` is always **one replica with the `Recreate` strategy**: it is a single
 SQLite writer and two processes must never open one database file. There is no
@@ -134,5 +145,5 @@ old manifests.
 python -m pytest -q deploy/helm/tests     # needs helm and PyYAML
 ```
 
-CI (`.github/workflows/chart.yml`) runs those, `helm lint --strict`, and
+CI (`.github/workflows/chart.yml`, on pull requests and main) runs those, `helm lint --strict`, and
 `kubeconform -strict` over several renders on every pull request.

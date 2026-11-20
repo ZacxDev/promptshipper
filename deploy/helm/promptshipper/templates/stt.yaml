@@ -21,6 +21,9 @@
 {{- $runtimeClass := $c.runtimeClassName }}
 {{- if and (not $runtimeClass) $c.gpu.enabled }}{{ $runtimeClass = $c.gpu.runtimeClassName }}{{ end }}
 {{- if and (not $c.auth.existingSecret) $c.auth.token }}
+{{- if lt (len $c.auth.token) 24 }}
+{{- fail "stt.auth.token must be at least 24 bytes (generate one with: openssl rand -hex 32)" }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Secret
@@ -89,11 +92,11 @@ spec:
         {{- with $c.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- $podAnn := deepCopy (default dict $c.podAnnotations) }}
-      {{- if and (not $c.auth.existingSecret) $c.auth.token }}
-      {{- $_ := set $podAnn "checksum/auth" ($c.auth.token | sha256sum) }}
-      {{- end }}
-      {{- with $podAnn }}
+      {{- /* No checksum of the auth Secret here, on purpose: any deterministic
+             function of the token in the pod template is readable by anyone
+             who can `get pods`. Changing an inline token therefore does not
+             roll the pod by itself — see deploy/helm/README.md. */}}
+      {{- with $c.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

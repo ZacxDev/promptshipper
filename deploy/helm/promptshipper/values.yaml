@@ -42,7 +42,9 @@ stt:
     # Mounted with optional: true, so the key may be absent.
     tokensKey: STT_API_TOKENS
     # Without existingSecret: the token to put into a chart-managed Secret.
-    # Rendering FAILS when neither is given — the service never runs open.
+    # At least 24 bytes. Rendering FAILS when neither is given, so the service
+    # never runs open. Changing it does not restart the pod by itself (no
+    # checksum of the token anywhere outside the Secret): roll it yourself.
     token: ""
 
   # Hugging Face token (the gated cohere model). Optional.
