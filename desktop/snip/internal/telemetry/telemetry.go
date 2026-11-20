@@ -16,6 +16,14 @@
 //	  - Append is a single newline-terminated write, opened O_APPEND, so
 //	    concurrent writers do not interleave for sub-PIPE_BUF lines.
 //
+// 🔴 OFF BY DEFAULT. Nothing is written unless $SNIP_ACTIVITY_SPOOL is exactly
+// "1" (see Enabled). The rows record which snippet was fired, from which app,
+// and the typed query: that is the author's personal activity pipeline, not
+// something a stranger's install should start writing to disk. The gate is in
+// Emit, the one sink every row passes, so a new caller is gated without knowing
+// the rule exists. $ACTIVITY_SPOOL_DIR still only picks WHERE; it does not
+// turn anything on.
+//
 // 🔴 TELEMETRY MUST NEVER BREAK PICKING. Every write path here is
 // best-effort: a spool failure degrades to a stderr note, never an error out
 // of the picker or the paste helper.
@@ -47,6 +55,14 @@ type Field struct {
 	Key   string
 	Value string
 }
+
+// EnableEnv is the opt-in switch.
+const EnableEnv = "SNIP_ACTIVITY_SPOOL"
+
+// Enabled reports whether fire rows are written: $SNIP_ACTIVITY_SPOOL == "1"
+// and nothing else. Any other value — unset, "", "0", "true", a typo — is off,
+// so a mistake fails toward writing nothing.
+func Enabled() bool { return os.Getenv(EnableEnv) == "1" }
 
 // SpoolDir resolves the spool directory the same way emit/collector do:
 // $ACTIVITY_SPOOL_DIR, else ($XDG_STATE_HOME || ~/.local/state)/activity/spool.
@@ -124,8 +140,14 @@ func BuildLine(fields []Field, now time.Time, host string) string {
 // line. Best-effort + bounded: telemetry must never crash its caller, so a
 // failure degrades to a stderr note (the line is still returned for tests).
 // O_APPEND single write == atomic for sub-PIPE_BUF lines.
+//
+// When telemetry is not Enabled it builds and returns the line (callers and
+// tests see the same value) but touches no file and no directory.
 func Emit(fields []Field, spoolDir string) string {
 	line := BuildLine(fields, time.Now(), "")
+	if !Enabled() {
+		return line
+	}
 	if spoolDir == "" {
 		spoolDir = SpoolDir()
 	}

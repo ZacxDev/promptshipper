@@ -26,7 +26,7 @@ func payload(t *testing.T, clipURL string, mutate func(map[string]any)) []byte {
 		"v":    1,
 		"type": "promptshipper-pairing",
 		"name": "test-box",
-		"stt":  map[string]any{"url": "http://192.0.2.7:8118", "token": sttTok},
+		"stt":  map[string]any{"url": "http://100.101.102.103:8118", "token": sttTok},
 		"clip": map[string]any{"url": clipURL, "token": clipTok},
 	}
 	if mutate != nil {
@@ -62,16 +62,17 @@ func write(t *testing.T, path string, data []byte) {
 // from the `PAIRING_PAYLOAD=` line ./setup prints, with unknown fields at
 // every level ignored (the v1 compatibility rule).
 func TestParsePairingTakesTheClipEndpoint(t *testing.T) {
-	withExtras := payload(t, "http://192.0.2.7:8139", func(m map[string]any) {
-		m["mcp"] = map[string]any{"url": "http://192.0.2.7:9000"}
+	withExtras := payload(t, "http://100.101.102.103:8139", func(m map[string]any) {
+		m["mcp"] = map[string]any{"url": "http://100.101.102.103:9000"}
 		m["clip"].(map[string]any)["future"] = true
 	})
 	for name, in := range map[string][]byte{
 		"raw json":     withExtras,
 		"setup line":   append([]byte("PAIRING_PAYLOAD="), withExtras...),
 		"padded":       []byte("\n  " + string(withExtras) + "\n"),
-		"no name":      payload(t, "http://192.0.2.7:8139", func(m map[string]any) { delete(m, "name") }),
+		"no name":      payload(t, "http://100.101.102.103:8139", func(m map[string]any) { delete(m, "name") }),
 		"ipv6 + slash": payload(t, "http://[fd7a:115c:a1e0::1]:8139/", nil),
+		"https name":   payload(t, "https://clip.example:8139", nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := ParsePairing(in, "/p/pairing.json")
@@ -94,7 +95,7 @@ func TestParsePairingTakesTheClipEndpoint(t *testing.T) {
 // Every refusal in docs/pairing.md, with LITERAL expected text, and no
 // message may carry either token.
 func TestParsePairingRefuses(t *testing.T) {
-	const ok = "http://192.0.2.7:8139"
+	const ok = "http://100.101.102.103:8139"
 	setClip := func(k string, v any) func(map[string]any) {
 		return func(m map[string]any) { m["clip"].(map[string]any)[k] = v }
 	}
@@ -109,19 +110,19 @@ func TestParsePairingRefuses(t *testing.T) {
 		{"v2", payload(t, ok, func(m map[string]any) { m["v"] = 2 }), "version 2; this snip understands version 1 only — update snip"},
 		{"v0", payload(t, ok, func(m map[string]any) { m["v"] = 0 }), "version 0; this snip understands version 1 only"},
 		{"no v", payload(t, ok, func(m map[string]any) { delete(m, "v") }), `no version field "v"`},
-		{"no stt", payload(t, ok, func(m map[string]any) { delete(m, "stt") }), `no "stt" object — refusing to pair half a server`},
 		{"no clip", payload(t, ok, func(m map[string]any) { delete(m, "clip") }), `no "clip" object`},
 		{"no clip url", payload(t, ok, setClip("url", "")), "clip.url is missing"},
 		{"no clip token", payload(t, ok, setClip("token", nil)), "clip.token is missing"},
-		{"ftp", payload(t, "ftp://192.0.2.7:8139", nil), "must be http:// or https://"},
-		{"path", payload(t, "http://192.0.2.7:8139/clip", nil), "must not have a path"},
-		{"no port", payload(t, "http://192.0.2.7", nil), "has no port"},
-		{"query", payload(t, "http://192.0.2.7:8139?x=1", nil), "must not have a query"},
-		{"fragment", payload(t, "http://192.0.2.7:8139#x", nil), "must not have a fragment"},
-		{"userinfo", payload(t, "http://u:p@192.0.2.7:8139", nil), "must not carry credentials"},
+		{"ftp", payload(t, "ftp://100.101.102.103:8139", nil), "must be http:// or https://"},
+		{"path", payload(t, "http://100.101.102.103:8139/clip", nil), "must not have a path"},
+		{"no port", payload(t, "http://100.101.102.103", nil), "has no port"},
+		{"query", payload(t, "http://100.101.102.103:8139?x=1", nil), "must not have a query"},
+		{"fragment", payload(t, "http://100.101.102.103:8139#x", nil), "must not have a fragment"},
+		{"userinfo", payload(t, "http://u:p@100.101.102.103:8139", nil), "must not carry credentials"},
 		{"short token", payload(t, ok, setClip("token", strings.Repeat("a", 23))), "clip.token is shorter than 24 characters"},
 		{"bad char", payload(t, ok, setClip("token", clipTok+"+")), "clip.token has a character outside [A-Za-z0-9._~-]"},
-		{"bad stt url", payload(t, ok, func(m map[string]any) { m["stt"].(map[string]any)["url"] = "http://x:1/v1" }), "stt.url"},
+		{"public http", payload(t, "http://203.0.113.5:8139", nil), "plain http:// is only allowed to a private IP address"},
+		{"hostname http", payload(t, "http://clip.example:8139", nil), "use https:// for clip.example"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -152,11 +153,11 @@ func TestParsePairingRefuses(t *testing.T) {
 // Resolution: overrides beat defaults; two sources at one level is a named
 // failure; neither names both files and both keys.
 func TestLoadResolution(t *testing.T) {
-	envBody := []byte("SNIP_SHARED_URL=http://192.0.2.9:1\nSNIP_SHARED_TOKEN=envtoken-abcdefgh\n")
+	envBody := []byte("SNIP_SHARED_URL=http://100.101.102.103:1\nSNIP_SHARED_TOKEN=envtoken-abcdefgh\n")
 
 	t.Run("default pairing only", func(t *testing.T) {
 		dir := isolate(t)
-		write(t, filepath.Join(dir, "snip", "pairing.json"), payload(t, "http://192.0.2.7:8139", nil))
+		write(t, filepath.Join(dir, "snip", "pairing.json"), payload(t, "http://100.101.102.103:8139", nil))
 		cfg, err := Load()
 		if err != nil || cfg.Token != clipTok {
 			t.Fatalf("Load = %+v, %v", cfg.URL, err)
@@ -174,7 +175,7 @@ func TestLoadResolution(t *testing.T) {
 		dir := isolate(t)
 		pp := filepath.Join(dir, "snip", "pairing.json")
 		ep := filepath.Join(dir, "snip", "shared.env")
-		write(t, pp, payload(t, "http://192.0.2.7:8139", nil))
+		write(t, pp, payload(t, "http://100.101.102.103:8139", nil))
 		write(t, ep, envBody)
 		_, err := Load()
 		if err == nil || !strings.Contains(err.Error(), "both "+pp+" and "+ep+" exist — remove one") {
@@ -192,7 +193,7 @@ func TestLoadResolution(t *testing.T) {
 	})
 	t.Run("override beats a default file", func(t *testing.T) {
 		dir := isolate(t)
-		write(t, filepath.Join(dir, "snip", "pairing.json"), payload(t, "http://192.0.2.7:8139", nil))
+		write(t, filepath.Join(dir, "snip", "pairing.json"), payload(t, "http://100.101.102.103:8139", nil))
 		ep := filepath.Join(t.TempDir(), "shared.env")
 		write(t, ep, envBody)
 		t.Setenv("SNIP_SHARED_ENV", ep)
@@ -270,5 +271,104 @@ func TestAPairedClientTalksToTheClipServer(t *testing.T) {
 	_, err = New(cfg).Rows(0)
 	if err == nil || err.Error() != "clip store refused (401): clip.token in "+pp+" is not accepted" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The clip-only form (`./setup --pairing --for desktop`) and the full phone
+// form both pair, and NOTHING about stt — absent, null, malformed, a wrong
+// type, a bad url or a short token — can cause a refusal: snip never reads it.
+func TestSTTIsOptionalAndNeverValidated(t *testing.T) {
+	const ok = "http://100.101.102.103:8139"
+	for name, mutate := range map[string]func(map[string]any){
+		"clip-only":       func(m map[string]any) { delete(m, "stt") },
+		"with stt":        nil,
+		"stt null":        func(m map[string]any) { m["stt"] = nil },
+		"stt a string":    func(m map[string]any) { m["stt"] = "nope" },
+		"stt empty":       func(m map[string]any) { m["stt"] = map[string]any{} },
+		"stt bad url":     func(m map[string]any) { m["stt"].(map[string]any)["url"] = "ftp://x/v1?q#f" },
+		"stt short token": func(m map[string]any) { m["stt"].(map[string]any)["token"] = "x" },
+		"stt public http": func(m map[string]any) { m["stt"].(map[string]any)["url"] = "http://stt.example:8118" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParsePairing(payload(t, ok, mutate), "/p/pairing.json")
+			if err != nil {
+				t.Fatalf("refused because of stt: %v", err)
+			}
+			if cfg.URL != ok || cfg.Token != clipTok {
+				t.Errorf("cfg = %q / token-is-clip=%v", cfg.URL, cfg.Token == clipTok)
+			}
+		})
+	}
+}
+
+// The cleartext rule, matching the Android app's PrivateNetwork: https always;
+// http only to localhost or a private/CGNAT/loopback/ULA IP literal.
+func TestCleartextRejection(t *testing.T) {
+	allowed := []string{
+		"https://clip.example:8443", "https://203.0.113.5:443",
+		"http://10.1.2.3:8139", "http://172.16.0.1:1", "http://172.31.255.255:1",
+		"http://192.168.1.10:8139", "http://100.64.0.1:1", "http://100.127.255.254:1",
+		"http://127.0.0.1:1", "http://localhost:8139", "http://LOCALHOST:8139",
+		"http://[::1]:1", "http://[fd7a:115c:a1e0::1]:8139",
+	}
+	refused := []string{
+		"http://clip.example:8139",   // a hostname
+		"http://203.0.113.5:8139",    // public v4
+		"http://172.15.0.1:1",        // just below 172.16/12
+		"http://172.32.0.1:1",        // just above
+		"http://100.63.255.255:1",    // just below CGNAT
+		"http://100.128.0.1:1",       // just above
+		"http://169.254.1.1:1",       // link-local: not in the app's set
+		"http://[fc00::1]:1",         // fc00::/8 is not fd00::/8
+		"http://[2001:db8::1]:1",     // global v6
+		"http://[::ffff:10.0.0.1]:1", // v4-mapped: refused, as the app does
+		"http://010.0.0.1:1",         // leading zero: ambiguous octal
+		"http://[fd00::1%25eth0]:1",  // zone id on an otherwise-allowed ULA
+		"http://[::1%25lo]:1",        // zone id on loopback
+		"http://10.0.0.1.example:1",  // a name that starts like an IP
+	}
+	for _, u := range allowed {
+		if why := CleartextRejection(u); why != "" {
+			t.Errorf("%s refused: %s", u, why)
+		}
+	}
+	for _, u := range refused {
+		if CleartextRejection(u) == "" {
+			t.Errorf("%s allowed", u)
+		}
+	}
+}
+
+// The rule holds at the REQUEST, whichever source built the Config: a Client
+// pointed at a public plain-http URL sends nothing (the fake server counts).
+func TestTheClientSendsNoRequestToAPublicHTTPURL(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"clips":[]}`))
+	}))
+	defer srv.Close()
+	// POSITIVE CONTROL: the loopback URL reaches the server.
+	if _, err := NewWithClient(Config{URL: srv.URL, Token: clipTok}, srv.Client()).Rows(0); err != nil || hits != 1 {
+		t.Fatalf("control: err=%v hits=%d", err, hits)
+	}
+	// Same server, addressed by a hostname over http: refused before dialling.
+	// (The transport would resolve "localhost.example" nowhere; the point is
+	// that no request is attempted and the reason is the rule.)
+	for _, call := range []func(c *Client) error{
+		func(c *Client) error { _, err := c.Rows(0); return err },
+		func(c *Client) error { return c.Delete(1) },
+	} {
+		c := NewWithClient(Config{URL: "http://clip.example:8139", Token: clipTok}, srv.Client())
+		err := call(c)
+		if err == nil || !strings.Contains(err.Error(), "use https:// for clip.example") {
+			t.Errorf("err = %v", err)
+		}
+		if err != nil && strings.Contains(err.Error(), clipTok) {
+			t.Errorf("message carries the token")
+		}
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d, want 1 (the control only)", hits)
 	}
 }

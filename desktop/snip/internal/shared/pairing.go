@@ -7,11 +7,12 @@ package shared
 // to ~/.config/snip/pairing.json (mode 0600), and the shared view reads its
 // `clip` object.
 //
-// 🔴 THE CONTRACT'S REFUSALS ARE KEPT EVEN WHERE SNIP DOES NOT NEED THE FIELD.
-// snip only talks to the clip server, but a payload missing `stt` is malformed
-// in v1 ("must not pair half a server silently"), and a different `v` is
-// rejected rather than parsed on a best-effort basis. A lenient second consumer
-// is how a producer change that breaks the app ships unnoticed.
+// 🔴 `stt` IS NEITHER REQUIRED NOR READ. A desktop pairs with the clip server
+// only, and `./setup --pairing --for desktop` emits a payload with no `stt`
+// object at all; a full phone payload carries one too. Either shape is
+// accepted, and nothing about `stt` — present, absent or malformed — can cause
+// a refusal: it is an unknown field to this consumer. Every v1 refusal on the
+// `clip` object and the envelope (`type`, `v`) is kept.
 //
 // 🔴 NO MESSAGE CARRIES A TOKEN. A refusal names the field and the rule; the
 // URL may be quoted (the operator needs to know which endpoint), a token never.
@@ -49,7 +50,6 @@ type pairingPayload struct {
 	V    *int             `json:"v"`
 	Type *string          `json:"type"`
 	Name string           `json:"name"`
-	STT  *pairingEndpoint `json:"stt"`
 	Clip *pairingEndpoint `json:"clip"`
 }
 
@@ -106,13 +106,8 @@ func ParsePairing(data []byte, path string) (Config, error) {
 		return Config{}, fmt.Errorf("%s: pairing payload is version %d; this snip understands version %d only — update snip",
 			path, *p.V, PairingVersion)
 	}
-	for _, ep := range []struct {
-		name string
-		e    *pairingEndpoint
-	}{{"stt", p.STT}, {"clip", p.Clip}} {
-		if err := validateEndpoint(path, ep.name, ep.e); err != nil {
-			return Config{}, err
-		}
+	if err := validateEndpoint(path, "clip", p.Clip); err != nil {
+		return Config{}, err
 	}
 	return Config{
 		URL:       *p.Clip.URL,
@@ -123,7 +118,7 @@ func ParsePairing(data []byte, path string) (Config, error) {
 
 func validateEndpoint(path, name string, e *pairingEndpoint) error {
 	if e == nil {
-		return fmt.Errorf("%s: pairing payload has no %q object — refusing to pair half a server", path, name)
+		return fmt.Errorf("%s: pairing payload has no %q object", path, name)
 	}
 	if e.URL == nil || *e.URL == "" {
 		return fmt.Errorf("%s: %s.url is missing", path, name)
@@ -163,6 +158,9 @@ func validateBaseURL(raw string) error {
 		return fmt.Errorf("must not have a query")
 	case u.Fragment != "" || strings.Contains(raw, "#"):
 		return fmt.Errorf("must not have a fragment")
+	}
+	if why := CleartextRejection(raw); why != "" {
+		return fmt.Errorf("%s", why)
 	}
 	return nil
 }

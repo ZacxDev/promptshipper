@@ -61,7 +61,7 @@ func TestTheClipSourceIsConfiguredFromThePairingPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := `PAIRING_PAYLOAD={"v":1,"type":"promptshipper-pairing","name":"test-box",` +
-		`"stt":{"url":"http://192.0.2.7:8118","token":"` + sttTok + `"},` +
+		`"stt":{"url":"http://100.101.102.103:8118","token":"` + sttTok + `"},` +
 		`"clip":{"url":"` + srv.URL + `","token":"` + clipTok + `"}}`
 	if err := os.WriteFile(filepath.Join(dir, "snip", "pairing.json"), []byte(payload), 0o600); err != nil {
 		t.Fatal(err)

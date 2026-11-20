@@ -144,6 +144,7 @@ func TestCancelRowTextEmpty(t *testing.T) {
 // Emit writes to <dir>/current.log, newline-terminated, and degrades to a
 // stderr note on failure — telemetry must never break its caller.
 func TestEmitWritesAndDegrades(t *testing.T) {
+	t.Setenv(EnableEnv, "1")
 	dir := t.TempDir()
 	line := Emit([]Field{{Key: "kind", Value: "fire"}}, dir)
 	raw, err := os.ReadFile(filepath.Join(dir, "current.log"))

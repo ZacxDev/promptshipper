@@ -167,7 +167,15 @@ func (c *Client) get(u string) ([]byte, error) {
 // 🔴 THE TOKEN IS NEVER IN A MESSAGE. The URL is, because the operator needs
 // to know which endpoint failed; the Authorization header is not, and the
 // request is never dumped.
+//
+// 🔴 THE CLEARTEXT RULE IS ENFORCED HERE, AT THE ONE PLACE A REQUEST IS MADE,
+// so it holds whichever config source produced the URL (pairing file, env
+// file, or a Config built by hand): a plain http:// URL to anything but a
+// private IP is refused before the token is put on the wire.
 func (c *Client) do(method, u string) ([]byte, int, error) {
+	if why := CleartextRejection(c.cfg.URL); why != "" {
+		return nil, 0, fmt.Errorf("refusing the clip store URL %q: %s", c.cfg.URL, why)
+	}
 	req, err := http.NewRequest(method, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("bad clip store URL %q: %v", c.cfg.URL, err)

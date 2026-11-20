@@ -32,8 +32,10 @@ catalog.
   deletes the highlighted clip from the store**, behind a `y/N` confirm — on
   every device, with no undo and no trash. Unconfigured by default; see
   [The shared clipboard](#the-shared-clipboard-ctrlg).
-- **Fire telemetry** — every open/cancel/select appends a JSONL row to a
-  local spool, so an audit can tell used rows from dead ones.
+- **Fire telemetry (opt-in, off by default)** — with `SNIP_ACTIVITY_SPOOL=1`,
+  every open/cancel/select appends a row to a local spool, so an audit can
+  tell used rows from dead ones. Unset, nothing is written; see
+  [Environment](#environment).
 
 ## Install
 
@@ -159,18 +161,20 @@ install -m 600 /dev/null ~/.config/snip/pairing.json
 $EDITOR ~/.config/snip/pairing.json     # paste the PAIRING_PAYLOAD= line
 ```
 
-snip uses the payload's `clip` object. It applies the v1 contract's refusals
-in full even though it never talks to `stt`: a payload that is not
-`"type":"promptshipper-pairing"`, has a `v` other than `1`, lacks `stt` or
-`clip` (or a `url`/`token` in either), has a base URL with a path, query or no
-port, or a token under 24 characters or outside `[A-Za-z0-9._~-]` is refused
-with the reason, never half-used. Unknown fields are ignored. After
-`./setup --rotate`, save the new payload over the old file.
+snip uses the payload's `clip` object and **ignores `stt` entirely**: the
+desktop form from `./setup --pairing --for desktop` has no `stt`, a phone
+payload has one, and both work. Nothing about `stt` can cause a refusal. The v1
+refusals on the rest are kept: a payload that is not
+`"type":"promptshipper-pairing"`, has a `v` other than `1`, lacks `clip` (or
+its `url`/`token`), has a clip base URL with a path, query or no port, or a
+token under 24 characters or outside `[A-Za-z0-9._~-]` is refused with the
+reason. Unknown fields are ignored. After `./setup --rotate`, save the new
+payload over the old file.
 
 **Or an env file.** `~/.config/snip/shared.env`, mode **0600**, with two keys:
 
 ```sh
-SNIP_SHARED_URL=http://your-store.example:8139
+SNIP_SHARED_URL=http://100.101.102.103:8139
 SNIP_SHARED_TOKEN=your-bearer-token
 ```
 
@@ -192,6 +196,14 @@ never a silent empty list — the file path(s) and the remedy are in the
 message, and no message ever carries a token. In the env file the URL must be
 `http(s)` and the token at least 8 characters; a pairing payload has the
 stricter v1 rules above.
+
+**Plain `http://` only to a private IP.** Whichever file the URL came from,
+snip refuses to send a request — and so the token — over `http://` unless the
+host is `localhost` or an IP literal in 10/8, 172.16/12, 192.168/16,
+100.64/10 (Tailscale's CGNAT range), 127/8, `::1` or `fd00::/8`. A hostname
+needs `https://`, even one that resolves privately at home: what it resolves
+to depends on the network the laptop is on now. This is the same rule as the
+Android app.
 
 The service it talks to is four routes — `GET /v1/clips?limit=N&q=…`,
 `POST /v1/clips`, `DELETE /v1/clips/{id}`, `GET /healthz`. snip **reads**
@@ -265,13 +277,14 @@ body never deletes by inference.
 | `SNIP_RESTORE_DELAY_MS` | clipboard-restore delay (default 300) |
 | `SNIP_ORIGIN_WINDOW` / `SNIP_ORIGIN_CLASS` | set by the WM keybind wrapper |
 | `SNIP_QUERY` / `SNIP_OPEN_LATENCY_MS` | injected by the picker into the helper |
-| `ACTIVITY_SPOOL_DIR` | fire-row spool override |
+| `SNIP_ACTIVITY_SPOOL` | **`1` turns fire telemetry on; anything else (unset, `0`, `true`) leaves it off** and nothing is written |
+| `ACTIVITY_SPOOL_DIR` | fire-row spool directory override (only where; it does not turn telemetry on) |
 | `SNIP_PAIRING` | shared-clipboard pairing-payload **path** override (default `~/.config/snip/pairing.json`, mode 0600). The path only — never the payload |
 | `SNIP_SHARED_ENV` | shared-clipboard env-file **path** override (default `~/.config/snip/shared.env`, mode 0600, holding `SNIP_SHARED_URL` + `SNIP_SHARED_TOKEN`). The path only — never the token value |
 
 State paths: the recency file is `$XDG_STATE_HOME/snip/recent.json` (else
-`~/.local/state/snip/recent.json`); fire rows go to
-`$XDG_STATE_HOME/activity/spool` (else `~/.local/state/activity/spool`).
+`~/.local/state/snip/recent.json`); fire rows, when `SNIP_ACTIVITY_SPOOL=1`,
+go to `$XDG_STATE_HOME/activity/spool` (else `~/.local/state/activity/spool`).
 
 ## Wire it to a hotkey
 
