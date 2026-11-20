@@ -20,13 +20,23 @@ Two, one per direction.
 
 | tool | purpose | clip API |
 |---|---|---|
-| `recent_clips` | Newest-first list of what the user captured on their devices, optional `limit` (1..500, **default 20**) and `query` (every word must appear as a case-insensitive substring — the server's FTS5 trigram index). | `GET /v1/clips?limit=&q=` |
-| `push_clip` | Send `text` to the user's devices as the newest clip, always with `device` = `mcp`. | `POST /v1/clips` |
+| `recent_clips` | Newest-first list of what the user captured on their devices, optional `limit` (1..500, **default 20**) and `query` (every word must appear as a case-insensitive substring). **The query is matched locally, over the newest 500 clips only** (see below). | `GET /v1/clips?limit=500` — never `q=` |
+| `push_clip` | Send `text` to the user's devices as the newest clip, always with `device` = `mcp`. Not idempotent: re-pushing identical text bumps it to the front and can re-trigger the phone's auto-copy. | `POST /v1/clips` |
 
 Why these and no more:
 
 * **Default limit 20, not the server's 100**: every row lands in the agent's
   context window, and "what did I just highlight" is answered by the newest few.
+  For the same reason each returned body is capped at **16 KiB**; a capped row
+  carries `truncated: true` and its full size in `body_bytes`.
+* 🔴 **Search covers only the newest 500 clips, and the query never leaves
+  this process.** `recent_clips` fetches the newest 500 rows with no query,
+  redacts them, filters them locally, then applies `limit`. The result's
+  `searched` field is how many clips were matched against — the search's whole
+  scope. (It is fewer than 500 only when the store holds fewer, or when the
+  newest 500 exceed the 16 MiB response cap and the window is halved until
+  they fit.) Why not use the clip server's own search: see *What is and is not
+  protected*.
 * **No get-by-id tool.** The clip server has no `GET /v1/clips/{id}` route yet;
   a tool faking it by scanning the newest 500 would be wrong about older clips.
   Re-add it on that route once it exists.
@@ -90,7 +100,9 @@ mkdir -p ~/.config/promptshipper
 ```
 
 (The phone form also contains the STT token, which this server does not use.
-After `./setup --rotate`, re-run the line above.)
+After `./setup --rotate`, re-run the line above. `stt` being optional is the
+format change `docs/pairing.md` is getting in the clip-server PR, #7; until that
+lands, that document still describes `stt` as required.)
 
 ### Claude Code
 
@@ -155,24 +167,59 @@ No streamable-HTTP listener. It would be a second network surface exposing the
 user's clipboard and would need an authentication scheme of its own, while every
 client this targets launches stdio servers. Add it only together with that auth.
 
-## The token never leaves the process except in the `Authorization` header
+## What is and is not protected
 
-Both output streams — stdout (every MCP frame) and stderr (every log line,
-including the SDK's) — go through one redacting writer (`redact.go`) that
-replaces the token with `[REDACTED]`. That covers paths no handler writes on
-purpose: a clip whose body *is* the token (the user copied it on their phone),
-a misconfigured URL pointing at something that echoes request headers into an
-error page, an HTTP-stack error string.
+The clip token is sent in one place: the `Authorization` header to the clip
+server. Beyond that, two separate mechanisms apply, and neither is a guarantee
+about anything else.
 
-It is a byte replace, and that is complete only because the token alphabet is
-restricted to `[A-Za-z0-9._~-]` at startup (pairing v1's own rule): a JSON
-encoder never escapes those characters, so the token appears in a frame as its
-exact bytes. Configuration errors are printed before the writer exists and are
-tested separately never to quote the token. A non-JSON error body is redacted
-**before** it is truncated, so a cut cannot leave an unrecognisable prefix.
+**1. Output redaction — the token's bytes.** Both output streams — stdout
+(every MCP frame) and stderr (every log line, including the SDK's) — go
+through one redacting writer (`redact.go`) that replaces the token, matched
+ASCII-case-insensitively, with `[REDACTED]`. Clip bodies and device names are
+also redacted at the source, before the local search and the 16 KiB cap see
+them. That covers a clip containing the token (the user copied it on their
+phone), a misconfigured URL pointing at something that echoes request headers
+into an error page, and an HTTP-stack error string. It is a byte replace, and
+that is complete only because the token alphabet is restricted to
+`[A-Za-z0-9._~-]` at startup (pairing v1's own rule): a JSON encoder never
+escapes those characters. Configuration errors are printed before the writer
+exists and are tested separately never to quote the token. Error bodies and
+clip bodies are redacted **before** they are truncated, so a cut cannot leave
+an unrecognisable prefix.
 
-Consequence worth knowing: a clip that contains the token shows to the agent
-with `[REDACTED]` in its place. That is intended.
+**2. No search oracle — information about the token.** Output redaction alone
+did **not** protect the token, and this README used to say it did. The agent's
+`query` used to be passed to the clip server, whose substring match answers
+"does any clip contain X?" — so with a clip like `my clip token <token> keep
+safe`, extending a query one character at a time recovered a 64-hex token
+exactly (575 calls, round-1 audit of PR #3) while every result correctly showed
+`[REDACTED]`. Now the query never leaves this process and is matched only
+against already-redacted bodies, so no result depends on the token's value.
+`oracle_test.go` runs every prefix and 1/2/3/8-character window of a token
+against two stores that differ only in that token and requires identical
+results, and asserts at the HTTP `RoundTripper` that no request carries the
+query.
+
+**Not protected:**
+
+* **A stored copy of the token is still in the clip store.** Redaction hides it
+  from the agent; it does not remove it. Anyone who can read the clip store's
+  database, or holds the token, can read it. Delete such a clip in the app.
+* **Variants that are not the exact token.** A token split by whitespace or
+  line breaks, encoded (base64, URL-escaped), or partially quoted is not
+  recognised, and its pieces are shown and searchable.
+* **Other secrets.** Only the clip token configured here is redacted. Passwords,
+  the STT token or API keys the user copied are shown to the agent as text —
+  that is what a clipboard reader does.
+* **Exact-body probing through `push_clip`.** Pushing a body identical to a
+  stored clip returns `deduped: true`. That answers "is there a clip whose
+  ENTIRE body is exactly this?" — it confirms a fully guessed body and gives no
+  partial-match signal, so it cannot be extended character by character, but it
+  is a yes/no answer about stored text.
+* **Any future tool or parameter that makes the clip server compute over raw
+  bodies** (a server-side search, filter or count) reopens the oracle, whatever
+  the output redaction does.
 
 ## Tests
 
@@ -194,9 +241,15 @@ CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
   (cd ../clip && CGO_ENABLED=0 go build -o /tmp/clipstore .)
   CLIPSTORE_BIN=/tmp/clipstore REQUIRE_REAL_CLIP=1 CGO_ENABLED=0 go test -count=1 ./...
   ```
+* `oracle_test.go` — the search-oracle guards (section above). Both were run
+  **red against `3e5ef8d`**, the code that sent `q=` to the clip server: 451 of
+  514 token-derived queries gave an observable difference, and every request
+  carried `q=`.
 * `secret_test.go` — the token-secrecy guards. Each asserts a positive control
   (the `[REDACTED]` marker is present, so the token provably reached that
-  stream) and was watched fail under a mutation:
+  stream; for stdout it comes from an error detail that is NOT redacted at the
+  source, so only the stream writer can have produced it) and was watched fail
+  under a mutation:
 
   | mutation | guard that goes red |
   |---|---|
@@ -208,3 +261,10 @@ CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
   | a config error quotes the token | `TestConfigErrorsNeverEchoTheToken` |
   | `pushDevice` changed from `mcp` | `TestPushClipStoresAsDeviceMCPAndReportsDedup` and the seam test |
   | a pairing file without `stt` refused | `TestConfigFromAPairingV1File` |
+  | search filters RAW bodies, then redacts | `TestSearchIsNotATokenOracle` |
+  | server applies `limit` before the local filter | `TestLimitIsAppliedAfterTheLocalFilter` |
+  | body capped before redaction | `TestBodiesAreCappedAfterRedaction` |
+  | case-sensitive redaction | `TestAnUpperCasedTokenIsRedactedToo` |
+  | no window halving on a too-large response | `TestAnOversizedResponseShrinksTheWindowInsteadOfFailing` |
+  | `push_clip` claims `idempotentHint` | `TestTheToolLedgerIsExactlyTheseTools` |
+  | local `limit` bound removed | `TestClipServerErrorsAreToolErrorsWithTheirCode` |

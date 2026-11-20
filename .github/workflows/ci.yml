@@ -65,6 +65,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: vet + test (CGO off, as the binary is built)
         working-directory: server/mcp
+        # 🔴 `shell: bash` is what turns on pipefail (GitHub runs it as
+        # `bash --noprofile --norc -eo pipefail`). Left unset, the step runs
+        # under `bash -e` only, the exit status of `go test | tee` is tee's, and
+        # failing tests pass the job — measured in the round-1 audit.
+        shell: bash
         env:
           CGO_ENABLED: "0"
           CLIPSTORE_BIN: ${{ runner.temp }}/clipstore

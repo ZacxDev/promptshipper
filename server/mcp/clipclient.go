@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,6 +51,16 @@ func (e *clipError) Error() string {
 	return fmt.Sprintf("clip server answered HTTP %d %s: %s", e.Status, e.Code, e.Detail)
 }
 
+// maxResponseBytes bounds one clip-server response held in memory. The clip
+// server caps a body at 256 KiB, so the newest 500 rows can in principle reach
+// ~125 MiB plus JSON escaping; recentClips halves its window on
+// errResponseTooLarge rather than fail outright.
+const maxResponseBytes = 16 << 20
+
+// errResponseTooLarge says what happened instead of blaming the URL, which is
+// what a truncated body used to produce (a JSON parse error).
+var errResponseTooLarge = errors.New("clip server response is larger than 16 MiB; fewer clips must be requested")
+
 // maxErrorDetail bounds how much of a non-JSON error body is relayed. A
 // misconfigured URL can point at anything, and an HTML page is not useful to
 // an agent beyond its first line.
@@ -77,9 +88,12 @@ func (c *clipClient) do(ctx context.Context, method, path string, body any, out 
 		return fmt.Errorf("clip server unreachable: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("reading clip server response: %w", err)
+	}
+	if len(raw) > maxResponseBytes {
+		return errResponseTooLarge
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var e struct {
@@ -115,12 +129,16 @@ type listResponse struct {
 	Clips *[]clip `json:"clips"`
 }
 
-func (c *clipClient) list(ctx context.Context, limit int, q string) ([]clip, error) {
+// list fetches the newest `limit` clips.
+//
+// 🔴 IT TAKES NO QUERY, ON PURPOSE. The clip server's `q` is a substring match
+// over RAW bodies, which makes every query a yes/no question about text this
+// process redacts — including the token. Searching is done locally over
+// redacted bodies (tools.go recentClips). Do not add a query parameter back;
+// TestTheQueryNeverLeavesTheProcess fails if any request carries one.
+func (c *clipClient) list(ctx context.Context, limit int) ([]clip, error) {
 	v := url.Values{}
 	v.Set("limit", strconv.Itoa(limit))
-	if q != "" {
-		v.Set("q", q)
-	}
 	var r listResponse
 	if err := c.do(ctx, http.MethodGet, "/v1/clips?"+v.Encode(), nil, &r); err != nil {
 		return nil, err

@@ -12,18 +12,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 // hostileClip echoes the token back through every channel a server could:
 // clip bodies, device names, JSON error details and a non-JSON error page.
-func hostileClip(t *testing.T) *httptest.Server {
+//
+// The failure mode is chosen by the TEST (mode), not by the request: the query
+// no longer reaches the server, so it cannot select one. The JSON-error mode
+// matters most: its detail is relayed WITHOUT source redaction, so it is the
+// case only the stdout stream filter can catch.
+func hostileClip(t *testing.T, mode *atomic.Value) *httptest.Server {
 	t.Helper()
 	f := newFakeClip(testToken)
 	f.add("my token is "+testToken+" do not share", "pixel")
 	f.add("plain clip", testToken) // the token as a device name
+	mode.Store("")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Query().Get("q") {
+		switch mode.Load().(string) {
 		case "json-error":
 			writeJSON(w, 418, map[string]string{"error": "teapot", "detail": "you sent " + r.Header.Get("Authorization")})
 			return
@@ -45,9 +52,12 @@ func hostileClip(t *testing.T) *httptest.Server {
 // Mutations watched red (2026-11-19):
 //   - redactBytes returns b unchanged            -> FAIL: token in stdout AND stderr
 //   - run() passes stdout, not outw, to IOTransport -> FAIL: token in stdout
+//     (re-verified 2026-11-20 after bodies became source-redacted: it
+//     SURVIVED until the JSON-error mode was decoupled from the query)
 //   - run() builds the logger on stderr, not errw  -> FAIL: token in stderr
 func TestTheTokenNeverAppearsInAnyOutput(t *testing.T) {
-	srv := hostileClip(t)
+	var mode atomic.Value
+	srv := hostileClip(t, &mode)
 	dir := filepath.Join(t.TempDir(), "pair-"+testToken)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -60,21 +70,34 @@ func TestTheTokenNeverAppearsInAnyOutput(t *testing.T) {
 	s := startSession(t, map[string]string{}, "-pairing", pf)
 
 	calls := []struct {
-		name string
-		args map[string]any
+		mode, name string
+		args       map[string]any
 	}{
-		{"recent_clips", nil},
-		{"recent_clips", map[string]any{"query": "token"}},
-		{"recent_clips", map[string]any{"query": "json-error"}},
-		{"recent_clips", map[string]any{"query": "html-error"}},
-		{"push_clip", map[string]any{"text": "echo " + testToken}},
+		{"", "recent_clips", nil},
+		{"", "recent_clips", map[string]any{"query": "token"}},
+		{"json-error", "recent_clips", nil},
+		{"html-error", "recent_clips", nil},
+		{"json-error", "push_clip", map[string]any{"text": "echo " + testToken}},
+		{"", "push_clip", map[string]any{"text": "echo " + testToken}},
 	}
-	var results strings.Builder
+	var results, errorResults strings.Builder
 	for _, c := range calls {
+		mode.Store(c.mode)
 		_, raw := s.call(t, c.name, c.args)
 		results.WriteString(raw)
+		if c.mode == "json-error" {
+			errorResults.WriteString(raw)
+		}
 	}
 	s.stop()
+
+	// Positive control for the STREAM filter specifically: the JSON error
+	// detail carries the token unredacted at the source, so its [REDACTED]
+	// can only have come from the stdout writer. (Clip bodies are redacted at
+	// the source too, so a marker from them would prove nothing about it.)
+	if !strings.Contains(errorResults.String(), "you sent Bearer "+redactedMarker) {
+		t.Errorf("positive control failed: the JSON-error path did not show the stream filter at work: %s", errorResults.String())
+	}
 
 	for name, out := range map[string]string{
 		"decoded tool results": results.String(),

@@ -96,7 +96,7 @@ func TestAgainstTheRealClipstore(t *testing.T) {
 	got := structured[recentOut](t, res)
 	if len(got.Clips) != 1 || got.Clips[0].Body != "the password is in the vault" ||
 		got.Clips[0].Device != "mcp" || got.Clips[0].BumpCount != 1 {
-		t.Fatalf("substring query against the real FTS5 index: %+v", got.Clips)
+		t.Fatalf("local substring query over the real store's rows: %+v", got.Clips)
 	}
 
 	res, _ = s.call(t, "recent_clips", nil)
@@ -104,9 +104,10 @@ func TestAgainstTheRealClipstore(t *testing.T) {
 		t.Fatalf("dedup bump should move the clip to the front: %+v", got.Clips)
 	}
 
-	res, _ = s.call(t, "recent_clips", map[string]any{"limit": 501})
-	if !res.IsError || !strings.Contains(textOf(res), "400 invalid_limit") {
-		t.Fatalf("limit 501 against the real server: %s", textOf(res))
+	// The search window is the REAL server's cap: asking it for 500 must be
+	// accepted (a 400 invalid_limit here means searchWindow drifted above it).
+	if got := structured[recentOut](t, res); got.Searched != 2 {
+		t.Fatalf("searched = %d, want 2 (every stored clip)", got.Searched)
 	}
 	if strings.Contains(s.rawOut.String()+s.rawErr.String(), testToken) {
 		t.Fatal("token in output")

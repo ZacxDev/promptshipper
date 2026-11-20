@@ -10,10 +10,13 @@
 // its own; every client this targets (Claude Code, Claude Desktop, other local
 // MCP hosts) launches stdio servers. See README.md.
 //
-// 🔴 THE CLIP TOKEN NEVER LEAVES THIS PROCESS EXCEPT IN THE Authorization
-// HEADER. Both output streams are wrapped in a redactingWriter (redact.go), so
-// a token that reaches a tool result, an error or a log line by any path is
-// replaced before it is written. TestTheTokenNeverAppearsInAnyOutput pins it.
+// 🔴 THE CLIP TOKEN'S BYTES ARE SENT ONLY IN THE Authorization HEADER. Both
+// output streams are wrapped in a redactingWriter (redact.go), so a token that
+// reaches a tool result, an error or a log line is replaced before it is
+// written (TestTheTokenNeverAppearsInAnyOutput). That alone does NOT stop an
+// agent learning the token from behaviour that depends on it; the search
+// oracle that did is closed in tools.go recentClips (oracle_test.go). README
+// "What is and is not protected" is the full statement.
 package main
 
 import (
