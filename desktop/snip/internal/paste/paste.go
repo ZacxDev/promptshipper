@@ -1,36 +1,48 @@
-// Package paste is the detached paste helper (`snip paste --label L`): the
-// deterministic, boring part of snip. It is spawned by the
+// Package paste is the detached paste helper (`snip paste --label L [--set name=value ...]`):
+// the deterministic, boring part of snip. It is spawned by the
 // picker with setsid and runs OUTLIVE the TUI on purpose — the picker quits
 // the moment the spawn succeeds, and the helper's first job is to WAIT until
 // the snip-class window is gone before anything is focused or typed.
 //
 // The sequence, in order (each step's why is inline):
 //
-//	abort check → resolve {{clip}} → save clipboard → set clipboard
+//	abort check → resolve {{clip}} → substitute inputs → save clipboard → set clipboard
 //	→ wait picker-gone → focus origin → send paste key
 //	→ wait restore_delay → restore clipboard → emit fire row
 //
 // 🔴 IF THE ORIGIN WINDOW IS GONE the helper ABORTS — no paste, a dunst toast,
 // an outcome=abort row. Pasting into "whatever i3 focuses next" is the
 // wrong-window failure mode; aborting is the honest one.
+//
+// 🔴 CLIP RESOLVES FIRST, THEN INPUTS. {{clip}} is resolved from the clipboard
+// before Apply substitutes input values, so a typed value containing the literal
+// text "{{clip}}" stays literal and never resolves to the clipboard contents. This
+// ordering is pinned by TestClipBeforeInputsOrdering.
 package paste
 
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/effects"
+	"github.com/ZacxDev/promptshipper/desktop/snip/internal/form"
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
 
-// ClipVar is the ONE variable the artifact may carry (no shell vars, no date
-// vars, no forms — {{clip}} only). It resolves at expand time
-// from the X clipboard, which is what espanso's
-// `vars = [{name="clip"; type="clipboard";}]` does today.
+// InputPlaceholderRE matches declared input placeholders ({{name}}) that
+// are NOT {{clip}} — used to check for unresolved placeholders after
+// substitution.
+var InputPlaceholderRE = regexp.MustCompile(`{{\w+}}`)
+
+// ClipVar is the clipboard variable: resolved at expand time from the X
+// clipboard before any input substitution, so a typed input value containing
+// the literal text "{{clip}}" stays literal. Declared inputs ({{service}},
+// {{env}}, etc.) are substituted afterwards via --set.
 const ClipVar = "{{clip}}"
 
 // DefaultRestoreDelayMS is how long the helper waits between the paste key
@@ -59,6 +71,9 @@ type Request struct {
 	OriginClass   string // SNIP_ORIGIN_CLASS
 	Query         string // SNIP_QUERY — the exact typed string (may be "")
 	OpenLatencyMS int64  // SNIP_OPEN_LATENCY_MS — the picker's open-phase number
+
+	// SetValues is the --set name=value map collected by the picker form or CLI.
+	SetValues map[string]string
 
 	// Ephemeral marks a SHARED-CLIPBOARD paste: the body came from another
 	// device, carried in on --body-file, and is not in the catalog at all.
@@ -186,6 +201,9 @@ func Run(eff effects.Effects, snippets []artifact.Snippet, req Request) Result {
 
 	// Resolve {{clip}} from the CURRENT clipboard — BEFORE the save/set pair
 	// below, so a {{clip}} snippet never resolves to its own expansion.
+	// 🔴 CLIP RESOLVES FIRST, THEN INPUTS. A typed input value that contains
+	// the literal text "{{clip}}" stays literal — it arrives AFTER clip
+	// substitution.
 	body := snippet.Body
 	// 🔴 NO {{clip}} EXPANSION IN A CLIP BODY. It came from another device and
 	// has no claim on this machine's clipboard — and the clipboard is about to
@@ -194,6 +212,22 @@ func Run(eff effects.Effects, snippets []artifact.Snippet, req Request) Result {
 	if !req.Ephemeral && strings.Contains(body, ClipVar) {
 		clip, _ := eff.ClipboardGet()
 		body = strings.ReplaceAll(body, ClipVar, string(clip))
+	}
+
+	// Substitute declared inputs from --set values, AFTER clip resolution.
+	// 🔴 THE ORDERING IS THE REQUIREMENT — clip first, then inputs.
+	if !req.Ephemeral && snippet.HasInputs() {
+		var err error
+		body, err = form.Apply(body, snippet.Inputs, req.SetValues)
+		if err != nil {
+			return abort(fmt.Sprintf("input substitution: %v", err))
+		}
+		// After substitution, refuse any remaining declared placeholders.
+		for _, in := range snippet.Inputs {
+			if strings.Contains(body, "{{"+in.Name+"}}") {
+				return abort(fmt.Sprintf("input %q still unresolved after substitution", in.Name))
+			}
+		}
 	}
 
 	// Save the clipboard bytes (held in memory), then set the expansion.

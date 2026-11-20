@@ -40,8 +40,16 @@ import (
 // --- intents ----------------------------------------------------------------
 
 // Select says "the operator chose this label" — Update turns it into the
-// detached paste-helper spawn.
+// detached paste-helper spawn. When the row declares inputs, the picker
+// enters the form instead and Select is the ENTRY, not the call.
 type Select struct{ Label string }
+
+// FormSubmit says "the operator submitted the form for this label with these
+// values" — Update turns it into the detached paste-helper spawn with --set.
+type FormSubmit struct {
+	Label  string
+	Values map[string]string
+}
 
 // Edit says "the operator wants to edit this row's BODY" — Update stages the
 // body in a scratch file and hands the terminal to the editor.
@@ -102,6 +110,7 @@ type DeleteClip struct{ ID int64 }
 type Intent interface{ intentName() }
 
 func (Select) intentName()        {}
+func (FormSubmit) intentName()    {}
 func (Edit) intentName()          {}
 func (ConfirmDelete) intentName() {}
 func (FetchShared) intentName()   {}
@@ -307,6 +316,26 @@ type Model struct {
 	// (it is neither a use nor a cancel) and nothing is pasted afterwards.
 	Deleted string
 
+	// --- form mode state -------------------------------------------------------
+	//
+	// When a row with inputs is selected, the picker enters modeForm and shows
+	// one line per declared input. These fields carry the form state; they are
+	// zero/unset in browse and shared mode.
+
+	// formSnippet is the row whose inputs are being filled.
+	formSnippet artifact.Snippet
+
+	// formValues maps input name to the current value (as a string; multiselect
+	// values are stored as a space-joined " "+name+" " pattern so toggling is
+	// O(1)).
+	formValues map[string]string
+
+	// formCursor is which input field is focused (0-based index into Inputs).
+	formCursor int
+
+	// formOptionCursor is the highlighted option index within a select/multiselect.
+	formOptionCursor int
+
 	// Width/Height arrive via tea.WindowSizeMsg; rendering clamps to them.
 	Width, Height int
 
@@ -347,6 +376,9 @@ func (m *Model) refilter() {
 		m.clampCursor()
 		return
 	}
+	if m.mode == modeForm {
+		return // form mode has no filter
+	}
 	m.filtered = Rank(m.all, m.query)
 	m.clampCursor()
 }
@@ -357,6 +389,9 @@ func (m *Model) refilter() {
 func (m *Model) rowCount() int {
 	if m.mode == modeShared {
 		return len(m.filteredClips)
+	}
+	if m.mode == modeForm {
+		return len(m.formSnippet.Inputs)
 	}
 	return len(m.filtered)
 }
@@ -384,11 +419,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Quit)
 		}
 		for _, it := range intents {
+			if fs, ok := it.(FormSubmit); ok {
+				fs := fs
+				n := next
+				cmds = append(cmds, func() tea.Msg {
+					return spawned{Err: n.fx.SpawnPaste(fs.Label, n.query, n.OpenLatencyMS, "", fs.Values)}
+				})
+			}
 			if sel, ok := it.(Select); ok {
 				sel := sel
 				n := next
 				cmds = append(cmds, func() tea.Msg {
-					return spawned{Err: n.fx.SpawnPaste(sel.Label, n.query, n.OpenLatencyMS, "")}
+					return spawned{Err: n.fx.SpawnPaste(sel.Label, n.query, n.OpenLatencyMS, "", nil)}
 				})
 			}
 			if ed, ok := it.(Edit); ok {
@@ -603,7 +645,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Selected = label
 		n := m
 		return m, func() tea.Msg {
-			return spawned{Err: n.fx.SpawnPaste(label, q, lat, path)}
+			return spawned{Err: n.fx.SpawnPaste(label, q, lat, path, nil)}
 		}
 	case spawned:
 		// 🔴 THE TUI CLOSES AS SOON AS THE HELPER IS SPAWNED. A spawn FAILURE
@@ -660,6 +702,13 @@ func (m Model) Lines() []string {
 	if line := m.noticeLine(); line != "" {
 		out = append(out, ui.StyNotice.Render(" "+truncate(line, m.Width-1)))
 	}
+	if m.mode == modeForm {
+		for i := range m.formSnippet.Inputs {
+			out = append(out, m.formRowLine(i))
+		}
+		out = append(out, m.formFooter())
+		return out
+	}
 	start, end := m.window()
 	if m.mode == modeShared {
 		for i := start; i < end; i++ {
@@ -695,6 +744,9 @@ func (m Model) header() string {
 	modeWord := "browse"
 	if m.mode == modeShared {
 		modeWord = "shared"
+	}
+	if m.mode == modeForm {
+		modeWord = "form"
 	}
 	if strings.TrimSpace(m.query) != "" {
 		modeWord = fmt.Sprintf("filter %q", m.query)
@@ -790,6 +842,11 @@ func (m Model) rowLine(i int) string {
 	}
 
 	label := truncate(r.Label, colW)
+	// Mark rows that declare inputs with a visible affordance.
+	if r.HasInputs() {
+		tag := ui.StyDim.Render(" …")
+		label = truncate(r.Label, colW-lipgloss.Width(tag)) + tag
+	}
 	return pointer + icon + " " + labelStyle.Render(label)
 }
 
@@ -968,6 +1025,10 @@ func (m Model) Step(msg tea.KeyPressMsg) (Model, []Intent) {
 	if m.mode == modeShared {
 		return m.stepShared(msg)
 	}
+	// 🔴 THE FORM MODE IS ALSO A DISJOINT KEY TABLE.
+	if m.mode == modeForm {
+		return m.stepForm(msg)
+	}
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.Canceled, m.quit = true, true
@@ -993,6 +1054,18 @@ func (m Model) Step(msg tea.KeyPressMsg) (Model, []Intent) {
 			return m, nil // nothing to choose; Enter is inert on an empty list
 		}
 		sel := m.filtered[m.cursor]
+		// When the selected row declares inputs, enter the form instead of
+		// spawning the paste directly.
+		if sel.HasInputs() {
+			m.mode = modeForm
+			m.formSnippet = sel
+			m.formCursor = 0
+			m.formOptionCursor = 0
+			m.query = ""
+			m.notice = ""
+			m.formValues = m.prefillFormValues(sel)
+			return m, nil
+		}
 		// 🔴 quit is NOT set here — only the spawned OUTCOME closes the TUI.
 		// The spawn cmd and the quit would otherwise race: a spawn failure
 		// must keep the window open with the failure in words, and a quit
@@ -1057,9 +1130,9 @@ func (m *Model) toast(msg string) {
 // and a toast. Split from effects.Effects so the TUI keeps its own minimal
 // seam; effects.Live implements both interfaces.
 type Launcher interface {
-	// SpawnPaste launches `self paste --label L` detached and returns
-	// without waiting for it, injecting SNIP_QUERY and SNIP_OPEN_LATENCY_MS
-	// into the child environment.
+	// SpawnPaste launches `self paste --label L [--set name=value ...]`
+	// detached and returns without waiting for it, injecting SNIP_QUERY and
+	// SNIP_OPEN_LATENCY_MS into the child environment.
 	//
 	// 🔴 bodyFile IS EMPTY ON THE NORMAL PATH. After a ctrl+e edit the row's
 	// new body is NOT in the deployed artifact yet — the artifact is
@@ -1068,7 +1141,9 @@ type Launcher interface {
 	// `paste --body-file` overrides the artifact's body for that one label.
 	// Without this the paste would deliver the OLD body and the whole feature
 	// would be a lie.
-	SpawnPaste(label, query string, openLatencyMS int64, bodyFile string) error
+	//
+	// setValues carries the --set name=value pairs from the form or CLI.
+	SpawnPaste(label, query string, openLatencyMS int64, bodyFile string, setValues map[string]string) error
 
 	// StageEdit writes body to a scratch file and returns its path — the file
 	// the editor is pointed at.

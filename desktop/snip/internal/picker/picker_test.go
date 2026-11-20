@@ -78,7 +78,7 @@ func (f *fakeLauncher) SpawnPasteClip(id int64, body, query string, openLatencyM
 	return f.spawnErr
 }
 
-func (f *fakeLauncher) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string) error {
+func (f *fakeLauncher) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string, setValues map[string]string) error {
 	f.spawned = append(f.spawned, label)
 	f.queries = append(f.queries, query)
 	f.openMS = append(f.openMS, openLatencyMS)

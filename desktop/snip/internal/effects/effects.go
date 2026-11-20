@@ -399,14 +399,16 @@ func runLanding(extra ...string) error {
 	return nil
 }
 
-// SpawnPaste implements picker.Launcher: `self paste --label L` detached
-// (own session), with the picker's handoff values (query, open latency)
+// SpawnPaste implements picker.Launcher: `self paste --label L [--set name=value ...]`
+// detached (own session), with the picker's handoff values (query, open latency)
 // injected into the child environment. Returns as soon as the child is
 // running; the TUI quits the moment this returns.
 //
 // A non-empty bodyFile adds `--body-file` — the edited body, which the
 // deployed artifact does not carry yet. The helper consumes (and removes) it.
-func (Live) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string) error {
+//
+// setValues adds --set name=value for each pair (from the form or CLI).
+func (Live) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string, setValues map[string]string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve self: %w", err)
@@ -414,6 +416,9 @@ func (Live) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string
 	args := []string{"paste", "--label", label}
 	if bodyFile != "" {
 		args = append(args, "--body-file", bodyFile)
+	}
+	for k, v := range setValues {
+		args = append(args, "--set", k+"="+v)
 	}
 	cmd := exec.Command(self, args...)
 	cmd.Env = append(os.Environ(),

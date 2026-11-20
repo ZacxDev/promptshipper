@@ -33,6 +33,7 @@ type mode int
 const (
 	modeBrowse mode = iota // the nix catalog (the default, and what every existing test drives)
 	modeShared             // the cross-device clipboard
+	modeForm               // the input form for a row that declares inputs
 )
 
 // SharedKey is the second keypress that opens the shared view.
