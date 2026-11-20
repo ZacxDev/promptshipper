@@ -1,0 +1,8 @@
+# Written by ./setup — holds your bearer tokens. Never commit it.
+deploy/compose/.env
+# Your own snippet catalog (./setup seeds it from server/stt/examples/).
+deploy/compose/snippets/
+
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,110 @@
+# promptshipper — self-hosted quickstart.
+#
+# Run ./setup from the repo root; it writes .env next to this file and starts
+# this stack. By hand:  cp .env.example .env  (then fill in the tokens)  and
+#   docker compose up -d
+#
+# Profiles (COMPOSE_PROFILES in .env picks one):
+#   cpu  stt on faster-whisper, any machine (default)
+#   gpu  stt on the opt-in cohere backend, needs an NVIDIA GPU + container toolkit
+# clip always runs. Exactly one stt variant runs, and both publish the same
+# host port on purpose, so two can never be up at once by accident.
+name: promptshipper
+
+x-stt: &stt
+  restart: unless-stopped
+  pull_policy: ${PULL_POLICY:-build}
+  # EVERY setting documented in server/stt/README.md and the backends, passed
+  # through from .env. Blank = the server's default (it treats blank as unset).
+  # tests/test_compose.py fails if a documented or code-read setting is missing.
+  environment: &stt-env
+    STT_API_TOKEN: ${STT_API_TOKEN:-}
+    STT_API_TOKENS: ${STT_API_TOKENS:-}
+    STT_MODEL: ${STT_MODEL:-}
+    STT_NO_SPEECH_MAX: ${STT_NO_SPEECH_MAX:-}
+    STT_AVG_LOGPROB_MIN: ${STT_AVG_LOGPROB_MIN:-}
+    STT_MAX_AUDIO_SECONDS: ${STT_MAX_AUDIO_SECONDS:-}
+    STT_MAX_UPLOAD_BYTES: ${STT_MAX_UPLOAD_BYTES:-}
+    # faster-whisper
+    STT_DEVICE: ${STT_DEVICE:-}
+    STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE:-}
+    STT_BEAM_SIZE: ${STT_BEAM_SIZE:-}
+    STT_VAD: ${STT_VAD:-}
+    STT_CPU_THREADS: ${STT_CPU_THREADS:-}
+    # openai passthrough
+    STT_UPSTREAM_URL: ${STT_UPSTREAM_URL:-}
+    STT_UPSTREAM_TOKEN: ${STT_UPSTREAM_TOKEN:-}
+    STT_UPSTREAM_MODEL: ${STT_UPSTREAM_MODEL:-}
+    STT_UPSTREAM_FORMAT: ${STT_UPSTREAM_FORMAT:-}
+    STT_UPSTREAM_TIMEOUT: ${STT_UPSTREAM_TIMEOUT:-}
+    # cohere
+    STT_MAX_NEW_TOKENS: ${STT_MAX_NEW_TOKENS:-}
+    STT_SCORES: ${STT_SCORES:-}
+    # Gated cohere model: a token from a Hugging Face account that accepted its terms.
+    HF_TOKEN: ${HF_TOKEN:-}
+    # The image's model cache path. NOT blank-defaulted: an empty HF_HOME would
+    # override the image's ENV and break the download location.
+    HF_HOME: ${HF_HOME:-/models/hf}
+    # fake (tests and smoke runs only)
+    STT_FAKE_TEXT: ${STT_FAKE_TEXT:-}
+  ports:
+    - "${BIND:-127.0.0.1}:${STT_PORT:-8118}:8000"
+  volumes:
+    - stt-models:/models
+    # A DIRECTORY mount, so edits to snippets/snippets.json are live.
+    - ./snippets:/etc/snip:ro
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+    interval: 15s
+    timeout: 10s
+    retries: 3
+    # The first start downloads the model.
+    start_period: 15m
+
+services:
+  stt:
+    <<: *stt
+    profiles: ["cpu"]
+    image: ghcr.io/zacxdev/promptshipper-stt:${PROMPTSHIPPER_VERSION:-latest}
+    build: ../../server/stt
+    environment:
+      <<: *stt-env
+      STT_BACKEND: ${STT_BACKEND:-faster-whisper}
+
+  stt-gpu:
+    <<: *stt
+    profiles: ["gpu"]
+    image: ghcr.io/zacxdev/promptshipper-stt-cohere:${PROMPTSHIPPER_VERSION:-latest}
+    build:
+      context: ../../server/stt
+      dockerfile: Dockerfile.cohere
+    environment:
+      <<: *stt-env
+      STT_BACKEND: cohere
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  clip:
+    image: ghcr.io/zacxdev/promptshipper-clip:${PROMPTSHIPPER_VERSION:-latest}
+    build: ../../server/clip
+    pull_policy: ${PULL_POLICY:-build}
+    restart: unless-stopped
+    environment:
+      # Empty or short -> clipstore refuses to start (exit 2), never runs open.
+      CLIPSTORE_TOKEN: ${CLIPSTORE_TOKEN:-}
+    ports:
+      - "${BIND:-127.0.0.1}:${CLIP_PORT:-8139}:8139"
+    volumes:
+      - clip-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  stt-models:
+  clip-data:

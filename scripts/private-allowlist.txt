@@ -1,0 +1,5 @@
+# Exact lines permitted to contain a pattern check-no-private.sh forbids.
+# Format: <path><TAB><the whole line, verbatim>. Keep this list short; every
+# entry must still match a real line or the gate fails it as STALE.
+docs/PLAN.md	- **Nothing from the private homelab may land here**: no mesh IPs (`10.42.*`),
+docs/PLAN.md	  no `*.homelab.lan` / `zacx.dev` hostnames, no secrets, no sops files, no

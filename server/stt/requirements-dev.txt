@@ -1,0 +1,7 @@
+# Test-only. The suite runs the FAKE backend, so faster-whisper/torch are not
+# needed; ffmpeg is (install it with your OS package manager).
+fastapi==0.165.0
+python-multipart==0.0.34
+numpy==2.5.5
+httpx==0.28.1
+pytest==8.4.2

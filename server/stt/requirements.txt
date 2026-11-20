@@ -1,0 +1,11 @@
+# CPU image (Dockerfile). PINNED, and the pins are measurements: read out of the
+# built image with `pip freeze` on 2026-11-19, the image the server was then
+# exercised end to end on (faster-whisper `tiny`, a synthetic speech clip). To
+# move a pin: change it, rebuild, and re-run a real transcription before tagging.
+fastapi==0.165.0
+uvicorn==0.54.0
+python-multipart==0.0.34
+numpy==2.5.5
+faster-whisper==1.2.1
+# The openai passthrough backend's client. Also what the test client needs.
+httpx==0.28.1

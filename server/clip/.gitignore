@@ -1,0 +1,5 @@
+# `go build` and `make build` in a main package write the executable here, and a
+# 9 MB statically-linked binary committed by accident is the kind of thing that
+# gets noticed six months later. The real artifact is a container image built by
+# CI from a tag push, never a file in this directory.
+/clipstore
