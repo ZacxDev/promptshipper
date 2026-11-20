@@ -283,6 +283,17 @@ func (a *API) postClip(w http.ResponseWriter, r *http.Request) {
 				strconv.Itoa(MaxDeviceBytes))
 		return
 	}
+	// 🔴 NEVER STORE THIS SERVER'S OWN CREDENTIAL. A token copied on a phone and
+	// captured as a clip would be readable back out by anything that can read
+	// clips (an agent via the MCP server). Refused 422 — not stored, never
+	// echoed, never logged. `a.token != ""` keeps an (unsupported) empty token
+	// from refusing every clip, since every string contains "".
+	if a.token != "" && (strings.Contains(req.Body, a.token) || strings.Contains(req.Device, a.token)) {
+		log.Printf("clipstore: POST /v1/clips: refused a clip containing this server's token (not stored)")
+		writeErr(w, http.StatusUnprocessableEntity, "contains_server_token",
+			"the clip looked like this server's own access token and was not stored")
+		return
+	}
 
 	clip, deduped, err := a.store.Put(r.Context(), req.Body, strings.TrimSpace(req.Device),
 		a.now().UnixMilli())
@@ -423,7 +434,7 @@ type errorResponse struct {
 	// body_too_large, missing_device, device_too_long, request_too_large,
 	// invalid_limit, invalid_id, no_such_clip, store_unreadable,
 	// store_unwritable, and for the change feed invalid_after, invalid_wait,
-	// invalid_feed, too_many_waiters.
+	// invalid_feed, too_many_waiters, and contains_server_token.
 	Error string `json:"error"`
 	// Detail is prose for a human reading a log or a toast. Never parsed.
 	Detail string `json:"detail,omitempty"`

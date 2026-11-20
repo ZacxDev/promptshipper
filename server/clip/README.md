@@ -132,6 +132,32 @@ laptop, by snip) is listed but never copied unasked. So:
 * the server does not enforce either rule — `device` is a free string — so the
   contract lives with the clients and this paragraph.
 
+### The server never stores its own token
+
+A clip whose `body` or `device` contains this server's own bearer token
+(`CLIPSTORE_TOKEN`) is refused with **`422 contains_server_token`** — "the
+clip looked like this server's own access token and was not stored". It is not
+stored, the body is never echoed, and the log line names neither. Reason: a
+token copied on the phone and captured as a clip would otherwise be readable
+back out by anything that can read clips (e.g. an agent via the MCP server).
+Any other value, including other 64-hex strings, is stored as usual.
+
+At startup the server counts stored clips that contain its token (rows saved
+before this guard existed) and, if there are any, logs **only the count** and
+how to delete them:
+
+```sh
+# one clipstore per database: stop the running one first
+docker compose --project-directory deploy/compose stop clip
+docker compose --project-directory deploy/compose run --rm clip -purge-token-clips
+docker compose --project-directory deploy/compose start clip
+# outside compose: clipstore -db /path/to/clipstore.db -purge-token-clips
+```
+
+`-purge-token-clips` deletes those rows (their search index entries go with
+them), prints how many, and exits. If the token may have been read already,
+rotate it instead (`./setup --rotate`, then re-pair).
+
 ### Fails loud, never empty
 
 An unreadable or unwritable store answers **5xx with a named reason and no
@@ -197,6 +223,7 @@ store: SQLite serves `count(*)` from its page cache (measured against
 | `$CLIPSTORE_TOKEN` | the bearer token. **Required**, minimum 24 bytes; a shorter or absent one is `exit 2` at startup, never a default and never an open listener. `./setup` generates one into `deploy/compose/.env`. |
 | `-addr` | default `:8139` |
 | `-db` | default `/data/clipstore.db` |
+| `-purge-token-clips` | delete stored clips containing this server's token, print the count, exit (see above) |
 
 ## What is deliberately absent
 

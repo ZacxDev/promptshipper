@@ -552,6 +552,29 @@ func (s *Store) Get(ctx context.Context, id int64) (Clip, error) {
 	return c, nil
 }
 
+// CountContaining counts clips whose body or device contains needle, and
+// DeleteContaining removes them. Used ONLY for this server's own token (see
+// main's startup scan): the needle is a bound parameter, never logged.
+func (s *Store) CountContaining(ctx context.Context, needle string) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM clips WHERE instr(body, ?) > 0 OR instr(device, ?) > 0`,
+		needle, needle).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count clips containing the token: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) DeleteContaining(ctx context.Context, needle string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM clips WHERE instr(body, ?) > 0 OR instr(device, ?) > 0`, needle, needle)
+	if err != nil {
+		return 0, fmt.Errorf("delete clips containing the token: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // ErrNoSuchClip is returned by Delete and Get for an id that is not in the store.
 var ErrNoSuchClip = errors.New("no such clip")
 
