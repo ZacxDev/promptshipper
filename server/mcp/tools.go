@@ -28,11 +28,18 @@ import (
 // way to silently turn that off.
 const pushDevice = "mcp"
 
-// searchWindow is how many of the newest clips recent_clips fetches, redacts
-// and searches: the clip server's hard cap on ?limit=. SEARCH COVERS ONLY
-// THESE; an older clip is not findable through this server. That is the price
-// of not sending the query to the clip server (see recentClips).
-const searchWindow = 500
+// maxLimit is the clip server's hard cap on ?limit=, and so the most rows one
+// call can fetch and the largest `limit` recent_clips accepts.
+const maxLimit = 500
+
+// minSearchWindow is the smallest window a QUERY searches: a query fetches
+// the newest max(limit, minSearchWindow) clips (never above maxLimit) and
+// filters them locally. SEARCH COVERS ONLY THAT WINDOW; an older clip is not
+// findable through this server, which is the price of not sending the query
+// to the clip server (see recentClips). Not maxLimit by default: the clip
+// server builds the whole response in memory on a single SQLite connection,
+// and 500 rows of 256 KiB clips took its peak RSS from 24 MB to 800 MB.
+const minSearchWindow = 100
 
 // maxClipBodyBytes caps each returned body so that 20 large clips (the clip
 // server allows 256 KiB each) cannot flood the agent's context. A capped body
@@ -83,7 +90,7 @@ func matches(body string, words []string) bool {
 
 type recentIn struct {
 	Limit int    `json:"limit,omitempty" jsonschema:"how many clips to return, newest first: 1..500, default 20"`
-	Query string `json:"query,omitempty" jsonschema:"optional search over the newest 500 clips only: every whitespace-separated word must appear in the clip as a case-insensitive substring"`
+	Query string `json:"query,omitempty" jsonschema:"optional search over the newest max(limit, 100) clips only (at most 500; pass limit 500 to search deepest): every whitespace-separated word must appear in the clip as a case-insensitive substring"`
 }
 
 type recentOut struct {
@@ -117,7 +124,7 @@ func newServer(cl *clipClient, opts *mcp.ServerOptions) *mcp.Server {
 		Description: "Read what the user recently highlighted, shared or copied on their phone and desktop " +
 			"(the promptshipper shared clipboard), newest first. Includes their dictations only if they enabled " +
 			"\"send dictations to my clip feed\" in the app. Optionally filter with a search query, which " +
-			"covers only the newest 500 clips (the result's searched field).",
+			"covers only the newest max(limit, 100) clips, at most 500 (the result's searched field).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in recentIn) (*mcp.CallToolResult, recentOut, error) {
 		return recentClips(ctx, cl, in)
@@ -154,18 +161,31 @@ func newServer(cl *clipClient, opts *mcp.ServerOptions) *mcp.Server {
 //   - letting the server apply limit to a query-filtered set, or refusing
 //     token-shaped queries, leaks through what is or is not returned.
 //
-// The fetched window does not depend on the query. It shrinks only when the
-// response is too large, which depends on stored sizes, never on the query.
+// HOW MANY ROWS are fetched:
+//   - no query: exactly `limit` — nothing is filtered, so nothing more is
+//     needed, and there is no query to leak;
+//   - a query: max(limit, minSearchWindow), never above maxLimit.
+//
+// Either way the window depends only on `limit` and on whether a query was
+// given — never on the query's CONTENT — so it carries nothing about stored
+// text. It shrinks (halving) only when the response is too large, which
+// depends on stored sizes, never on the query.
 func recentClips(ctx context.Context, cl *clipClient, in recentIn) (*mcp.CallToolResult, recentOut, error) {
 	limit := in.Limit
 	if limit == 0 {
 		limit = defaultRecentLimit
 	}
-	if limit < 1 || limit > searchWindow {
-		return nil, recentOut{}, fmt.Errorf("limit must be an integer in 1..%d", searchWindow)
+	if limit < 1 || limit > maxLimit {
+		return nil, recentOut{}, fmt.Errorf("limit must be an integer in 1..%d", maxLimit)
+	}
+	words := strings.Fields(strings.ToLower(in.Query))
+	window := limit
+	if len(words) > 0 {
+		// limit <= maxLimit and minSearchWindow < maxLimit, so this never
+		// exceeds the clip server's cap.
+		window = max(limit, minSearchWindow)
 	}
 	var rows []clip
-	window := searchWindow
 	for {
 		var err error
 		rows, err = cl.list(ctx, window)
@@ -178,7 +198,6 @@ func recentClips(ctx context.Context, cl *clipClient, in recentIn) (*mcp.CallToo
 		}
 		break
 	}
-	words := strings.Fields(strings.ToLower(in.Query))
 	out := recentOut{Clips: []clipOut{}, Searched: len(rows)}
 	for _, r := range rows {
 		r.Body = redactString(r.Body, cl.token)

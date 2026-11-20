@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
@@ -245,9 +246,9 @@ func TestAnOversizedResponseShrinksTheWindowInsteadOfFailing(t *testing.T) {
 	srv := httptest.NewServer(f)
 	defer srv.Close()
 	s := startSession(t, envFor(srv))
-	res, _ := s.call(t, "recent_clips", map[string]any{"limit": 1})
+	res, _ := s.call(t, "recent_clips", map[string]any{"query": "z", "limit": 500})
 	got := structured[recentOut](t, res)
-	if res.IsError || got.Searched == 0 || got.Searched >= 70 || len(got.Clips) != 1 {
+	if res.IsError || got.Searched == 0 || got.Searched >= 70 || len(got.Clips) != got.Searched {
 		t.Fatalf("err=%v searched=%d clips=%d %s", res.IsError, got.Searched, len(got.Clips), textOf(res))
 	}
 
@@ -258,5 +259,70 @@ func TestAnOversizedResponseShrinksTheWindowInsteadOfFailing(t *testing.T) {
 	res, _ = s.call(t, "recent_clips", nil)
 	if !res.IsError || !strings.Contains(textOf(res), "larger than 16 MiB") {
 		t.Fatalf("too large: %s", textOf(res))
+	}
+}
+
+// TestTheFetchedWindowIsLimitWithoutAQueryAndBoundedWithOne asserts the
+// outgoing ?limit= at the RoundTripper. Fetching 500 rows on every call drove
+// the clip server's peak RSS from 24 MB to 800 MB (round-2 audit), so the
+// no-query path must ask for exactly `limit`, and a query must ask for
+// max(limit, 100), never more than 500.
+func TestTheFetchedWindowIsLimitWithoutAQueryAndBoundedWithOne(t *testing.T) {
+	rec := &recordingTransport{next: http.DefaultTransport}
+	orig := http.DefaultTransport
+	http.DefaultTransport = rec
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	f := newFakeClip(testToken)
+	f.add("one clip", "pixel")
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	s := startSession(t, envFor(srv))
+	cases := []struct {
+		args map[string]any
+		want string
+	}{
+		{nil, "20"},
+		{map[string]any{"limit": 7}, "7"},
+		{map[string]any{"limit": 500}, "500"},
+		{map[string]any{"query": "   ", "limit": 3}, "3"}, // blank query = no query
+		{map[string]any{"query": "clip"}, "100"},
+		{map[string]any{"query": "clip", "limit": 5}, "100"},
+		{map[string]any{"query": "clip", "limit": 250}, "250"},
+		{map[string]any{"query": "clip", "limit": 500}, "500"},
+	}
+	for _, c := range cases {
+		rec.mu.Lock()
+		before := len(rec.urls)
+		rec.mu.Unlock()
+		res, _ := s.call(t, "recent_clips", c.args)
+		if res.IsError {
+			t.Fatalf("%v: %s", c.args, textOf(res))
+		}
+		rec.mu.Lock()
+		got := rec.urls[before:]
+		rec.mu.Unlock()
+		if len(got) != 1 || got[0].Query().Get("limit") != c.want {
+			t.Errorf("%v: requests %v, want exactly one with limit=%s", c.args, got, c.want)
+		}
+	}
+}
+
+// TestRecentClipsRedactsDevicesWithoutTheStreamWriter calls recentClips
+// directly, with no redacting writer in the way, so source redaction of the
+// DEVICE field is observable on its own (through the full process the stdout
+// writer would mask its absence).
+func TestRecentClipsRedactsDevicesWithoutTheStreamWriter(t *testing.T) {
+	f := newFakeClip(testToken)
+	f.add("ordinary text", "dev-"+testToken)
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := newClipClient(config{ClipURL: srv.URL, Token: testToken})
+	_, out, err := recentClips(t.Context(), cl, recentIn{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Clips) != 1 || out.Clips[0].Device != "dev-"+redactedMarker || out.Clips[0].Body != "ordinary text" {
+		t.Fatalf("got %+v", out.Clips)
 	}
 }

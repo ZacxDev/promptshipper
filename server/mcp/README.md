@@ -20,7 +20,7 @@ Two, one per direction.
 
 | tool | purpose | clip API |
 |---|---|---|
-| `recent_clips` | Newest-first list of what the user captured on their devices, optional `limit` (1..500, **default 20**) and `query` (every word must appear as a case-insensitive substring). **The query is matched locally, over the newest 500 clips only** (see below). | `GET /v1/clips?limit=500` — never `q=` |
+| `recent_clips` | Newest-first list of what the user captured on their devices, optional `limit` (1..500, **default 20**) and `query` (every word must appear as a case-insensitive substring). **A query is matched locally, over the newest max(`limit`, 100) clips only** (see below). | `GET /v1/clips?limit=…` — never `q=` |
 | `push_clip` | Send `text` to the user's devices as the newest clip, always with `device` = `mcp`. Not idempotent: re-pushing identical text bumps it to the front and can re-trigger the phone's auto-copy. | `POST /v1/clips` |
 
 Why these and no more:
@@ -29,14 +29,19 @@ Why these and no more:
   context window, and "what did I just highlight" is answered by the newest few.
   For the same reason each returned body is capped at **16 KiB**; a capped row
   carries `truncated: true` and its full size in `body_bytes`.
-* 🔴 **Search covers only the newest 500 clips, and the query never leaves
-  this process.** `recent_clips` fetches the newest 500 rows with no query,
-  redacts them, filters them locally, then applies `limit`. The result's
-  `searched` field is how many clips were matched against — the search's whole
-  scope. (It is fewer than 500 only when the store holds fewer, or when the
-  newest 500 exceed the 16 MiB response cap and the window is halved until
-  they fit.) Why not use the clip server's own search: see *What is and is not
-  protected*.
+* 🔴 **A query searches a bounded window, and never leaves this process.**
+  Without a query, `recent_clips` requests exactly `limit` rows. With one, it
+  requests the newest **max(`limit`, 100) rows, never above 500** (the clip
+  server's cap), with no query, redacts them, filters them locally, then
+  applies `limit`. So the default call searches the newest 100 clips; pass
+  `limit: 500` to search deepest. Older clips are not findable here. The
+  result's `searched` field is how many clips were matched against — the
+  search's whole scope (fewer when the store holds fewer, or when the response
+  exceeded the 16 MiB cap and the window was halved until it fit). Why not use
+  the clip server's own search: see *What is and is not protected*. Why not
+  always fetch 500: the clip server builds the whole response in memory on one
+  SQLite connection, and 500 rows of 256 KiB clips took its peak RSS from
+  24 MB to 800 MB.
 * **No get-by-id tool.** The clip server has no `GET /v1/clips/{id}` route yet;
   a tool faking it by scanning the newest 500 would be wrong about older clips.
   Re-add it on that route once it exists.
@@ -48,7 +53,9 @@ Why these and no more:
 
 Every tool result carries structured content (`created_at` is RFC 3339 UTC).
 Clip-server errors are returned as tool errors with the server's stable code,
-e.g. `clip server answered HTTP 400 invalid_limit: …` — never as an empty list.
+e.g. `clip server answered HTTP 503 store_unreadable: the clip store could not
+be read` — never as an empty list. (An out-of-range `limit` is refused by this
+server before any request: `limit must be an integer in 1..500`.)
 
 ## Push to the phone
 
@@ -268,3 +275,6 @@ CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
   | no window halving on a too-large response | `TestAnOversizedResponseShrinksTheWindowInsteadOfFailing` |
   | `push_clip` claims `idempotentHint` | `TestTheToolLedgerIsExactlyTheseTools` |
   | local `limit` bound removed | `TestClipServerErrorsAreToolErrorsWithTheirCode` |
+  | no-query path fetches the query window (or 500) | `TestTheFetchedWindowIsLimitWithoutAQueryAndBoundedWithOne` |
+  | query window not raised to `limit` | same test |
+  | device not redacted at the source | `TestRecentClipsRedactsDevicesWithoutTheStreamWriter` |

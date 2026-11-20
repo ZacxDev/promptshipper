@@ -104,10 +104,11 @@ func TestAgainstTheRealClipstore(t *testing.T) {
 		t.Fatalf("dedup bump should move the clip to the front: %+v", got.Clips)
 	}
 
-	// The search window is the REAL server's cap: asking it for 500 must be
-	// accepted (a 400 invalid_limit here means searchWindow drifted above it).
-	if got := structured[recentOut](t, res); got.Searched != 2 {
-		t.Fatalf("searched = %d, want 2 (every stored clip)", got.Searched)
+	// The deepest query window is the REAL server's cap: asking it for 500
+	// must be accepted (a 400 invalid_limit here means maxLimit drifted above it).
+	res, _ = s.call(t, "recent_clips", map[string]any{"query": "clip vault", "limit": 500})
+	if got := structured[recentOut](t, res); res.IsError || got.Searched != 2 {
+		t.Fatalf("query at limit 500 against the real server: %s", textOf(res))
 	}
 	if strings.Contains(s.rawOut.String()+s.rawErr.String(), testToken) {
 		t.Fatal("token in output")
