@@ -126,7 +126,10 @@ while the bubble is running). It works with Claude Code, Claude Desktop, or any
 MCP client. From the repository root, on the machine that ran `./setup`:
 
 ```sh
-# build it (Go 1.26+)
+# build it (Go 1.26+) -- or, with Nix on x86_64-linux:
+#   nix profile install github:ZacxDev/promptshipper#mcp
+# (installs the same promptshipper-mcp binary; use $(command -v promptshipper-mcp)
+#  in place of ~/.local/bin/promptshipper-mcp below)
 (cd server/mcp && CGO_ENABLED=0 go build -trimpath -o ~/.local/bin/promptshipper-mcp .)
 
 # a clip-only pairing file (no STT token), written without printing the token
@@ -158,8 +161,11 @@ clip feed** (Settings → Shared clipboard) in the app. It is off by default.
 | [`docs/pairing.md`](docs/pairing.md) | the QR pairing payload format |
 | [`AGENTS.md`](AGENTS.md) | install instructions for an AI agent |
 
-`flake.nix` currently provides a development shell (`nix develop`) with the
-toolchains for the servers and their tests.
+`flake.nix` provides a development shell (`nix develop`) with the toolchains
+for the servers and their tests, plus two desktop packages for x86_64-linux:
+`snip` (`nix build github:ZacxDev/promptshipper#snip`) and `mcp`, whose binary
+is `promptshipper-mcp`. The servers install with Compose or the Helm chart, not
+the flake.
 
 ## Security model
 
