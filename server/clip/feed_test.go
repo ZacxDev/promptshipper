@@ -17,9 +17,15 @@ import (
 
 const feedToken = "feed-test-token-0123456789abcdef"
 
+// frozenClock is the server clock for every feed test: ALL requests land in
+// ONE millisecond, so any list-order assertion depends only on the tiebreak,
+// never on how fast the runner happens to be. (A wall clock made the plain-
+// list order pass or fail by timing luck.)
+func frozenClock() time.Time { return time.UnixMilli(1_800_000_000_000) }
+
 func feedServer(t *testing.T) (*httptest.Server, *API) {
 	t.Helper()
-	api := NewAPI(newTestStore(t), feedToken, time.Now)
+	api := NewAPI(newTestStore(t), feedToken, frozenClock)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 	return srv, api
