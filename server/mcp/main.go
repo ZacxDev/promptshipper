@@ -1,8 +1,8 @@
 // promptshipper-mcp — an MCP server that gives an AI agent a two-way channel to
 // the user's devices through the promptshipper clip server.
 //
-// The agent can read what the user highlighted, dictated or copied on their
-// phone and desktop (recent_clips, get_clip) and hand text back (push_clip).
+// The agent can read what the user captured on their phone and desktop
+// (recent_clips) and hand text back to the phone (push_clip).
 // It is a thin client of server/clip's HTTP API and stores nothing itself.
 //
 // Transport: stdio only. A streamable-HTTP listener would be a second network
@@ -65,7 +65,7 @@ func run(args []string, getenv func(string) string, stdin io.ReadCloser, stdout,
 	logger := slog.New(slog.NewTextHandler(errw, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("promptshipper-mcp starting", "version", buildVersion, "config", cfg.String())
 
-	srv := newServer(newClipClient(cfg), cfg.Device, &mcp.ServerOptions{Logger: logger})
+	srv := newServer(newClipClient(cfg), &mcp.ServerOptions{Logger: logger})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

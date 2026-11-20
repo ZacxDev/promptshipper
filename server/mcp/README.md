@@ -4,63 +4,57 @@ An [MCP](https://modelcontextprotocol.io) server that gives an AI agent (Claude
 Code, Claude Desktop, any MCP client) a live, two-way channel to the user's
 devices through the promptshipper [clip server](../clip/README.md):
 
-* **read** what the user just highlighted, dictated or copied on their phone or
-  desktop — no more retyping or pasting it into the chat;
-* **push** text back — a command, a reply draft, a link — so it is waiting on
-  their phone.
+* **read** what the user just highlighted, shared or copied on their phone or
+  desktop — no more retyping or pasting it into the chat. Their **dictations**
+  are included **only when the user enables "send dictations to my clip feed"
+  in the app**; otherwise only highlighted/shared/copied text reaches the clip
+  server;
+* **push** text back — a command, a reply draft, a link — onto their phone's
+  clipboard (see *Push to the phone* for the condition).
 
 It is a thin client of the clip server's HTTP API and stores nothing itself.
 
 ## Tools
 
-Three, each mapping to exactly one thing the clip server can do.
+Two, one per direction.
 
 | tool | purpose | clip API |
 |---|---|---|
 | `recent_clips` | Newest-first list of what the user captured on their devices, optional `limit` (1..500, **default 20**) and `query` (every word must appear as a case-insensitive substring — the server's FTS5 trigram index). | `GET /v1/clips?limit=&q=` |
-| `get_clip` | One clip by `id` (from `recent_clips`), when the agent needs to quote or re-read a specific one. | `GET /v1/clips?limit=500`, then picked by id — see the gap below |
-| `push_clip` | Send `text` to the user's devices as the newest clip. | `POST /v1/clips` with `device` = `mcp` |
+| `push_clip` | Send `text` to the user's devices as the newest clip, always with `device` = `mcp`. | `POST /v1/clips` |
 
 Why these and no more:
 
 * **Default limit 20, not the server's 100**: every row lands in the agent's
   context window, and "what did I just highlight" is answered by the newest few.
+* **No get-by-id tool.** The clip server has no `GET /v1/clips/{id}` route yet;
+  a tool faking it by scanning the newest 500 would be wrong about older clips.
+  Re-add it on that route once it exists.
 * **No delete tool.** `DELETE /v1/clips/{id}` exists, but an agent erasing the
   user's clipboard history is destructive and serves nothing in the read/push
   loop. Deletion stays in the user's own hands (the app, snip).
-* **No STT tool.** Dictation reaches the agent as clips: the app captures its
-  transcripts to the clip server, and the STT server keeps no history of its own.
+* **No STT tool.** The STT server keeps no history; dictation reaches agents
+  only through the clip feed, by the app opt-in above.
 
 Every tool result carries structured content (`created_at` is RFC 3339 UTC).
 Clip-server errors are returned as tool errors with the server's stable code,
 e.g. `clip server answered HTTP 400 invalid_limit: …` — never as an empty list.
 
-## Gaps in the clip server and the app (not changed by this PR)
+## Push to the phone
 
-1. 🔴 **"Push to my phone's clipboard" is "push to the clip list", not to the
-   system clipboard.** `push_clip` stores a clip; the phone sees it the next time
-   the user **opens** the app's clip picker, where one tap copies it to the
-   system clipboard. Nothing writes it to the clipboard automatically, and
-   nothing tells the phone a clip arrived, because:
-   * the clip server has **no server→client push** (no SSE, websocket, long-poll
-     or FCM; its README lists "No server→phone push" under *deliberately absent*);
-   * the app only reads clips when its picker is opened: `ClipPickerActivity` is
-     the only caller of `GET /v1/clips`, and there is no background listener
-     (read from `ZacxDev/dicta`, the app before its port into `android/`, at
-     2026-11-17).
+`push_clip` stores a clip with `device` = `mcp`. That value is **hardcoded, not
+configurable**: the app copies clips whose device is exactly `mcp` to the
+phone's clipboard automatically, so an override would be a way to switch that
+off silently.
 
-   Closing it needs a server change (a change feed — e.g. `GET /v1/clips?since=`
-   long-poll or SSE) **and** an app change (a listener plus a notification such
-   as "Agent sent a clip — tap to copy"; whether Android lets the app write the
-   clipboard without that tap is not checked here). The
-   tool's result says so in a `note` field, so an agent does not tell the user
-   "it's on your clipboard".
-2. **No fetch-by-id route.** The clip server's routes are `POST /v1/clips`,
-   `GET /v1/clips` and `DELETE /v1/clips/{id}`. `get_clip` therefore reads the
-   500 newest clips (the server's hard cap) and picks one out. A clip older than
-   that is reported as **out of reach**, not as nonexistent — "not found" would
-   be false about a row that may well exist. A `GET /v1/clips/{id}` route would
-   make it exact.
+🔴 **The automatic copy is conditional**: it happens only **while the
+promptshipper app's bubble is running and the installed app version supports the
+clip feed** (the long-poll `GET /v1/clips?after=&wait=` being added to the clip
+server, with the app's auto-copy, alongside this server). Otherwise the clip
+waits at the top of the app's clip list (and snip) for the user to copy by hand.
+Each push result carries a `note` saying exactly this, so an agent does not
+promise more than was delivered. This server cannot observe whether the phone
+copied it.
 
 ## Install
 
@@ -77,9 +71,8 @@ The server needs the clip server's URL and token. Give it **one** of:
 
 | | |
 |---|---|
-| `-pairing PATH` or `$PROMPTSHIPPER_PAIRING_FILE` | a [pairing payload](../../docs/pairing.md) JSON file, format v1. Only `clip.url` and `clip.token` are read; `stt` and unknown fields are ignored. |
+| `-pairing PATH` or `$PROMPTSHIPPER_PAIRING_FILE` | a [pairing payload](../../docs/pairing.md) JSON file, format v1, **with or without** the `stt` object (the desktop form omits it). Only `clip.url` and `clip.token` are read; `stt` is never required and unknown fields are ignored. |
 | `$PROMPTSHIPPER_CLIP_URL` + `$PROMPTSHIPPER_CLIP_TOKEN` | the same two values directly |
-| `$PROMPTSHIPPER_MCP_DEVICE` | optional: the `device` name on pushed clips (default `mcp`, max 64 bytes) |
 
 Setting both a pairing file and the env pair is refused (exit 2) rather than
 resolved by precedence: a stale one silently winning is a 401 with an invisible
@@ -96,8 +89,8 @@ mkdir -p ~/.config/promptshipper
 (umask 077; ./setup --pairing --no-qr | sed -n 's/^PAIRING_PAYLOAD=//p' > ~/.config/promptshipper/pairing.json)
 ```
 
-(It also contains the STT token, which this server does not use. After
-`./setup --rotate`, re-run the line above.)
+(The phone form also contains the STT token, which this server does not use.
+After `./setup --rotate`, re-run the line above.)
 
 ### Claude Code
 
@@ -193,8 +186,9 @@ CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
   against an MCP client over pipes, capturing the raw bytes of both streams.
 * `realclip_test.go` — the **seam** test: the same calls against a real
   clipstore binary, so the fake cannot drift from `server/clip`. It needs
-  `CLIPSTORE_BIN=/path/to/clipstore` and skips without it; CI sets
-  `REQUIRE_REAL_CLIP=1`, which turns that skip into a failure.
+  `CLIPSTORE_BIN=/path/to/clipstore` and skips without it; CI (the `mcp` job in
+  `.github/workflows/ci.yml`) sets `REQUIRE_REAL_CLIP=1`, which turns that
+  skip into a failure.
 
   ```sh
   (cd ../clip && CGO_ENABLED=0 go build -o /tmp/clipstore .)
@@ -212,3 +206,5 @@ CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
   | error body truncated before redaction | `TestTruncatedErrorBodyDoesNotLeakATokenPrefix` |
   | redact each `Write` instead of each line | `TestRedactingWriterCatchesATokenSplitAcrossWrites` |
   | a config error quotes the token | `TestConfigErrorsNeverEchoTheToken` |
+  | `pushDevice` changed from `mcp` | `TestPushClipStoresAsDeviceMCPAndReportsDedup` and the seam test |
+  | a pairing file without `stt` refused | `TestConfigFromAPairingV1File` |

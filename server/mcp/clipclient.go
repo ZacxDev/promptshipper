@@ -22,10 +22,6 @@ type clip struct {
 	BumpCount int64  `json:"bump_count"`
 }
 
-// clipMaxLimit is the clip server's hard cap on ?limit= (server/clip MaxLimit).
-// get_clip asks for exactly this many rows; see getClip.
-const clipMaxLimit = 500
-
 // clipClient speaks the clip server's HTTP API. It holds the token and puts it
 // in exactly one place: the Authorization header.
 type clipClient struct {

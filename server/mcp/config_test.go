@@ -13,7 +13,7 @@ func TestConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ClipURL != "http://100.101.102.103:8139" || cfg.Token != testToken || cfg.Device != "mcp" {
+	if cfg.ClipURL != "http://100.101.102.103:8139" || cfg.Token != testToken {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 	if strings.Contains(cfg.String(), testToken) {
@@ -22,34 +22,42 @@ func TestConfigFromEnv(t *testing.T) {
 }
 
 func TestConfigFromAPairingV1File(t *testing.T) {
-	// The exact v1 shape from docs/pairing.md, including the stt half and an
-	// unknown field, both of which must be ignored.
-	p := filepath.Join(t.TempDir(), "pairing.json")
-	body := `{"v":1,"type":"promptshipper-pairing","name":"box","future":{"x":1},` +
-		`"stt":{"url":"http://[fd7a:115c:a1e0::1]:8118","token":"stt-token-not-this-one-0000000"},` +
-		`"clip":{"url":"http://[fd7a:115c:a1e0::1]:8139","token":"` + testToken + `"}}`
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+	// The v1 shape from docs/pairing.md WITH the stt half (the phone form) and
+	// WITHOUT it (the desktop form), plus an unknown field. stt is never
+	// required and never read; the clip half is all this server uses.
+	dir := t.TempDir()
+	clipHalf := `"clip":{"url":"http://[fd7a:115c:a1e0::1]:8139","token":"` + testToken + `"}`
+	bodies := map[string]string{
+		"with stt": `{"v":1,"type":"promptshipper-pairing","name":"box","future":{"x":1},` +
+			`"stt":{"url":"http://[fd7a:115c:a1e0::1]:8118","token":"stt-token-not-this-one-0000000"},` + clipHalf + `}`,
+		"without stt": `{"v":1,"type":"promptshipper-pairing","name":"box",` + clipHalf + `}`,
+		"stt null":    `{"v":1,"type":"promptshipper-pairing","stt":null,` + clipHalf + `}`,
 	}
-	for name, getenv := range map[string]func(string) string{
-		"flag": func(string) string { return "" },
-		"env": func(k string) string {
-			if k == envPairingFile {
-				return p
+	for form, body := range bodies {
+		p := filepath.Join(dir, strings.ReplaceAll(form, " ", "-")+".json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, getenv := range map[string]func(string) string{
+			"flag": func(string) string { return "" },
+			"env": func(k string) string {
+				if k == envPairingFile {
+					return p
+				}
+				return ""
+			},
+		} {
+			flag := ""
+			if name == "flag" {
+				flag = p
 			}
-			return ""
-		},
-	} {
-		flag := ""
-		if name == "flag" {
-			flag = p
-		}
-		cfg, err := loadConfig(getenv, flag)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if cfg.ClipURL != "http://[fd7a:115c:a1e0::1]:8139" || cfg.Token != testToken {
-			t.Fatalf("%s: cfg = %+v", name, cfg)
+			cfg, err := loadConfig(getenv, flag)
+			if err != nil {
+				t.Fatalf("%s via %s: %v", form, name, err)
+			}
+			if cfg.ClipURL != "http://[fd7a:115c:a1e0::1]:8139" || cfg.Token != testToken {
+				t.Fatalf("%s via %s: cfg = %+v", form, name, cfg)
+			}
 		}
 	}
 }
@@ -82,7 +90,6 @@ func TestConfigRefusals(t *testing.T) {
 		{"no host", "no host", map[string]string{envClipURL: "http://", envClipToken: testToken}, ""},
 		{"short", "shorter than 24", map[string]string{envClipURL: "http://h:1", envClipToken: strings.Repeat("a", 23)}, ""},
 		{"space", "outside [A-Za-z0-9._~-]", map[string]string{envClipURL: "http://h:1", envClipToken: strings.Repeat("a", 24) + " "}, ""},
-		{"long device", "longer than 64", map[string]string{envClipURL: "http://h:1", envClipToken: testToken, envDevice: strings.Repeat("d", 65)}, ""},
 	}
 	for _, c := range cases {
 		_, err := loadConfig(func(k string) string { return c.env[k] }, c.flag)

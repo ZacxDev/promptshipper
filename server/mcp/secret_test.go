@@ -67,7 +67,6 @@ func TestTheTokenNeverAppearsInAnyOutput(t *testing.T) {
 		{"recent_clips", map[string]any{"query": "token"}},
 		{"recent_clips", map[string]any{"query": "json-error"}},
 		{"recent_clips", map[string]any{"query": "html-error"}},
-		{"get_clip", map[string]any{"id": 1}},
 		{"push_clip", map[string]any{"text": "echo " + testToken}},
 	}
 	var results strings.Builder

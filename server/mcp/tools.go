@@ -8,12 +8,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// The tool set is deliberately three tools. Each one maps to exactly one
-// capability the clip server has; there is no tool for DELETE /v1/clips/{id}
-// (an agent deleting the user's clipboard history is a destructive action with
-// no use in the read/push loop this server exists for) and none for the STT
-// server (dictation reaches an agent as clips: the app captures transcripts to
-// the clip server, and STT has no history of its own).
+// The tool set is deliberately two tools, one per direction. There is no tool
+// for DELETE /v1/clips/{id} (an agent deleting the user's clipboard history is
+// a destructive action with no use in the read/push loop this server exists
+// for), no get-by-id tool (the clip server has no such route yet; re-add one on
+// GET /v1/clips/{id} when it exists), and none for the STT server, which keeps
+// no history.
+//
+// 🔴 WHAT recent_clips CAN SEE: text the user highlighted, shared or copied
+// into the clip feed — and their dictations ONLY when they have enabled "send
+// dictations to my clip feed" in the app. Without that opt-in a dictation
+// never reaches the clip server, so the tool descriptions must not promise it.
+
+// pushDevice is the `device` attribution on every clip this server pushes. It
+// is a CONSTANT, not configuration: the app auto-copies clips whose device is
+// exactly "mcp" to the phone's clipboard, so a configurable value would be a
+// way to silently turn that off.
+const pushDevice = "mcp"
 
 // defaultRecentLimit is smaller than the clip server's default of 100 on
 // purpose: every row lands in the agent's context window, and "what did I just
@@ -44,10 +55,6 @@ type recentOut struct {
 	Clips []clipOut `json:"clips"`
 }
 
-type getIn struct {
-	ID int64 `json:"id" jsonschema:"the clip id from recent_clips"`
-}
-
 type pushIn struct {
 	Text string `json:"text" jsonschema:"the text to send to the user's devices (max 256 KiB)"`
 }
@@ -58,18 +65,20 @@ type pushOut struct {
 	Note    string `json:"note"`
 }
 
-// pushNote is returned with every push so the agent does not tell the user
-// "it's on your phone's clipboard" — it is not. See README "Push to phone".
-const pushNote = "Stored as the newest clip. It appears at the top of the clip list in the promptshipper app and in snip; " +
-	"the user copies it from there. It is NOT written to the phone's system clipboard automatically."
+// pushNote is returned with every push so the agent states the delivery
+// condition rather than promising more. See README "Push to the phone".
+const pushNote = "Stored as the newest clip (device \"mcp\"). The phone copies it to its clipboard automatically " +
+	"only while the promptshipper app's bubble is running and the app version supports the clip feed; " +
+	"otherwise it waits at the top of the app's clip list (and snip) for the user to copy."
 
-func newServer(cl *clipClient, device string, opts *mcp.ServerOptions) *mcp.Server {
+func newServer(cl *clipClient, opts *mcp.ServerOptions) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "promptshipper", Version: buildVersion}, opts)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "recent_clips",
-		Description: "Read what the user recently highlighted, dictated or copied on their phone and desktop " +
-			"(the promptshipper shared clipboard), newest first. Optionally filter with a search query.",
+		Description: "Read what the user recently highlighted, shared or copied on their phone and desktop " +
+			"(the promptshipper shared clipboard), newest first. Includes their dictations only if they enabled " +
+			"\"send dictations to my clip feed\" in the app. Optionally filter with a search query.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in recentIn) (*mcp.CallToolResult, recentOut, error) {
 		limit := in.Limit
@@ -90,44 +99,16 @@ func newServer(cl *clipClient, device string, opts *mcp.ServerOptions) *mcp.Serv
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "get_clip",
-		Description: "Read one clip by its id (from recent_clips). Only the 500 newest clips are reachable.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getIn) (*mcp.CallToolResult, clipOut, error) {
-		if in.ID < 1 {
-			return nil, clipOut{}, fmt.Errorf("id must be a positive integer")
-		}
-		// 🔴 THE CLIP SERVER HAS NO GET-BY-ID ROUTE (its route ledger is
-		// POST/GET /v1/clips and DELETE /v1/clips/{id}). So this reads the
-		// newest clipMaxLimit rows and picks one out. A clip older than that is
-		// reported as out of reach, NOT as nonexistent: "not found" would be a
-		// false statement about a row that may well exist.
-		rows, err := cl.list(ctx, clipMaxLimit, "")
-		if err != nil {
-			return nil, clipOut{}, err
-		}
-		for _, r := range rows {
-			if r.ID == in.ID {
-				return nil, toOut(r), nil
-			}
-		}
-		if len(rows) < clipMaxLimit {
-			return nil, clipOut{}, fmt.Errorf("no clip with id %d (the store holds %d clips and none has that id)", in.ID, len(rows))
-		}
-		return nil, clipOut{}, fmt.Errorf("clip %d is not among the %d newest clips; the clip server has no "+
-			"fetch-by-id route, so an older clip can only be found with recent_clips and a query", in.ID, clipMaxLimit)
-	})
-
-	mcp.AddTool(s, &mcp.Tool{
 		Name: "push_clip",
 		Description: "Send text to the user's devices as a new clip on their promptshipper shared clipboard " +
-			"(phone app and desktop). Use it to hand the user something to paste: a command, a reply draft, a link.",
+			"(phone app and desktop); the phone copies it to its clipboard when the app is running. " +
+			"Use it to hand the user something to paste: a command, a reply draft, a link.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in pushIn) (*mcp.CallToolResult, pushOut, error) {
 		if in.Text == "" {
 			return nil, pushOut{}, fmt.Errorf("text must not be empty")
 		}
-		r, err := cl.push(ctx, in.Text, device)
+		r, err := cl.push(ctx, in.Text, pushDevice)
 		if err != nil {
 			return nil, pushOut{}, err
 		}

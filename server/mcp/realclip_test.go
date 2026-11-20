@@ -104,11 +104,6 @@ func TestAgainstTheRealClipstore(t *testing.T) {
 		t.Fatalf("dedup bump should move the clip to the front: %+v", got.Clips)
 	}
 
-	res, _ = s.call(t, "get_clip", map[string]any{"id": first.ID})
-	if c := structured[clipOut](t, res); res.IsError || c.Body != "the password is in the vault" {
-		t.Fatalf("get_clip: %s", textOf(res))
-	}
-
 	res, _ = s.call(t, "recent_clips", map[string]any{"limit": 501})
 	if !res.IsError || !strings.Contains(textOf(res), "400 invalid_limit") {
 		t.Fatalf("limit 501 against the real server: %s", textOf(res))

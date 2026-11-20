@@ -28,7 +28,7 @@ func TestTheToolLedgerIsExactlyTheseTools(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "get_clip,push_clip,recent_clips"; got != want {
+	if got, want := strings.Join(names, ","), "push_clip,recent_clips"; got != want {
 		t.Fatalf("tools = %s, want %s", got, want)
 	}
 	for _, tl := range res.Tools {
@@ -136,57 +136,25 @@ func TestAWrongTokenIsA401ToolErrorNotAnEmptyList(t *testing.T) {
 	}
 }
 
-func TestGetClipFindsByIDAndDistinguishesAbsentFromOutOfReach(t *testing.T) {
-	f := newFakeClip(testToken)
-	a := f.add("first", "pixel")
-	f.add("second", "laptop")
-	srv := httptest.NewServer(f)
-	defer srv.Close()
-	s := startSession(t, envFor(srv))
-
-	res, _ := s.call(t, "get_clip", map[string]any{"id": a.ID})
-	if got := structured[clipOut](t, res); res.IsError || got.Body != "first" || got.ID != a.ID {
-		t.Fatalf("get = %s", textOf(res))
-	}
-
-	res, _ = s.call(t, "get_clip", map[string]any{"id": 999})
-	if !res.IsError || !strings.Contains(textOf(res), "no clip with id 999") {
-		t.Fatalf("absent = %s", textOf(res))
-	}
-
-	res, _ = s.call(t, "get_clip", map[string]any{"id": 0})
-	if !res.IsError || !strings.Contains(textOf(res), "positive integer") {
-		t.Fatalf("id 0 = %s", textOf(res))
-	}
-
-	// 503 more clips push `a` out of the 500-row window. It still EXISTS in the
-	// store, so the answer must say "out of reach", never "no clip".
-	for i := range 503 {
-		f.add(fmt.Sprintf("filler %d", i), "pixel")
-	}
-	res, _ = s.call(t, "get_clip", map[string]any{"id": a.ID})
-	if !res.IsError || !strings.Contains(textOf(res), "not among the 500 newest") {
-		t.Fatalf("out of window = %s", textOf(res))
-	}
-}
-
-func TestPushClipStoresWithTheConfiguredDeviceAndReportsDedup(t *testing.T) {
+func TestPushClipStoresAsDeviceMCPAndReportsDedup(t *testing.T) {
 	f := newFakeClip(testToken)
 	srv := httptest.NewServer(f)
 	defer srv.Close()
+	// A device override in the environment must have NO effect: the app
+	// auto-copies on device == "mcp" exactly, so the value is not configurable.
 	env := envFor(srv)
-	env[envDevice] = "agent-box"
+	env["PROMPTSHIPPER_MCP_DEVICE"] = "agent-box"
 	s := startSession(t, env)
 
 	res, _ := s.call(t, "push_clip", map[string]any{"text": "kubectl get pods"})
 	got := structured[pushOut](t, res)
-	if res.IsError || got.ID == 0 || got.Deduped || !strings.Contains(got.Note, "NOT written to the phone's system clipboard") {
+	if res.IsError || got.ID == 0 || got.Deduped || !strings.Contains(got.Note, "only while the promptshipper app's bubble is running") {
 		t.Fatalf("push = %s", textOf(res))
 	}
 	f.mu.Lock()
 	stored := f.clips[0]
 	f.mu.Unlock()
-	if stored.Body != "kubectl get pods" || stored.Device != "agent-box" {
+	if stored.Body != "kubectl get pods" || stored.Device != "mcp" {
 		t.Fatalf("stored = %+v", stored)
 	}
 
@@ -198,18 +166,5 @@ func TestPushClipStoresWithTheConfiguredDeviceAndReportsDedup(t *testing.T) {
 	res, _ = s.call(t, "push_clip", map[string]any{"text": ""})
 	if !res.IsError {
 		t.Fatalf("empty push accepted")
-	}
-}
-
-func TestDefaultDeviceIsMCP(t *testing.T) {
-	f := newFakeClip(testToken)
-	srv := httptest.NewServer(f)
-	defer srv.Close()
-	s := startSession(t, envFor(srv))
-	s.call(t, "push_clip", map[string]any{"text": "hello"})
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.clips[0].Device != "mcp" {
-		t.Fatalf("device = %q", f.clips[0].Device)
 	}
 }

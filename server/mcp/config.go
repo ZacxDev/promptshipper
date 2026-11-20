@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 )
 
 // Environment variables. The token has no flag on purpose: a flag value is
@@ -16,21 +15,12 @@ const (
 	envPairingFile = "PROMPTSHIPPER_PAIRING_FILE"
 	envClipURL     = "PROMPTSHIPPER_CLIP_URL"
 	envClipToken   = "PROMPTSHIPPER_CLIP_TOKEN"
-	envDevice      = "PROMPTSHIPPER_MCP_DEVICE"
 )
-
-// defaultDevice is the `device` attribution on clips this server pushes, so a
-// row in the phone's picker reads "… · mcp" and is distinguishable from text the
-// user captured themselves.
-const defaultDevice = "mcp"
 
 // Bounds that mirror the clip server's own contract (server/clip/README.md and
 // docs/pairing.md). They are checked HERE, at startup, so a misconfiguration is
 // an exit-2 with a named reason rather than a 401 on the agent's first call.
-const (
-	minTokenLen    = 24
-	maxDeviceBytes = 64
-)
+const minTokenLen = 24
 
 // tokenRe is the pairing-v1 token alphabet. 🔴 IT IS ALSO WHAT MAKES THE
 // OUTPUT REDACTION COMPLETE: every character in it is one a JSON encoder emits
@@ -44,16 +34,18 @@ var tokenRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 type config struct {
 	ClipURL string // base URL, no path, no trailing slash
 	Token   string
-	Device  string
 	Source  string // human description of where the config came from
 }
 
 func (c config) String() string {
-	return fmt.Sprintf("clip=%s device=%s source=%s", c.ClipURL, c.Device, c.Source)
+	return fmt.Sprintf("clip=%s source=%s", c.ClipURL, c.Source)
 }
 
 // pairingV1 is the subset of docs/pairing.md this server reads. Unknown fields
-// (stt, name, a future mcp object) are ignored, as the format requires.
+// (name, a future mcp object) are ignored, as the format requires, and so is
+// `stt`: it is optional here and never required — the desktop form of the
+// payload omits it, and this server never talks to the STT server.
+// TestConfigFromAPairingV1File covers the payload with and without it.
 type pairingV1 struct {
 	V    *int   `json:"v"`
 	Type string `json:"type"`
@@ -125,14 +117,6 @@ func loadConfig(getenv func(string) string, pairingFlag string) (config, error) 
 	}
 	if !tokenRe.MatchString(cfg.Token) {
 		return config{}, errors.New("clip token has characters outside [A-Za-z0-9._~-]")
-	}
-
-	cfg.Device = strings.TrimSpace(getenv(envDevice))
-	if cfg.Device == "" {
-		cfg.Device = defaultDevice
-	}
-	if len(cfg.Device) > maxDeviceBytes {
-		return config{}, fmt.Errorf("%s is longer than %d bytes", envDevice, maxDeviceBytes)
 	}
 	return cfg, nil
 }
