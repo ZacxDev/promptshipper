@@ -106,14 +106,15 @@ func tokenRefusal(token string) string {
 // tokenScanner is the slice of the store the startup scan needs.
 type tokenScanner interface {
 	CountContaining(ctx context.Context, needle string) (int64, error)
-	DeleteContaining(ctx context.Context, needle string) (int64, error)
 }
 
 // reportTokenClips is the one-time startup scan: it reports HOW MANY stored
 // clips contain this server's own token — never which, never their content,
-// never the token — and how to delete them. POST refuses such clips (422), so
-// any found predate that guard. A scan failure is logged and does not stop
-// the server: it is a hygiene report, not a precondition.
+// never the token — and that the token must be ROTATED. Deleting those clips
+// is not the fix: a token that sat in a readable clip may already have been
+// read, and only rotation retires it. POST refuses such clips (422), so any
+// found predate that guard. A scan failure is logged and does not stop the
+// server: it is a hygiene report, not a precondition.
 func reportTokenClips(ctx context.Context, s tokenScanner, token string, out io.Writer) {
 	n, err := s.CountContaining(ctx, token)
 	switch {
@@ -121,15 +122,9 @@ func reportTokenClips(ctx context.Context, s tokenScanner, token string, out io.
 		fmt.Fprintf(out, "clipstore: WARNING: could not scan stored clips for this server's token: %v\n", err)
 	case n > 0:
 		fmt.Fprintf(out, "clipstore: WARNING: %d stored clip(s) contain this server's own access token. "+
-			"Anything that can read clips can read it. Delete them with: clipstore -purge-token-clips "+
-			"(compose: docker compose stop clip && docker compose run --rm clip -purge-token-clips "+
-			"&& docker compose start clip), or rotate the token (./setup --rotate).\n", n)
+			"Anything that can read clips may already have read it: rotate the token with "+
+			"./setup --rotate (then re-pair your devices).\n", n)
 	}
-}
-
-// purgeTokenClips deletes every stored clip containing this server's token.
-func purgeTokenClips(ctx context.Context, s tokenScanner, token string) (int64, error) {
-	return s.DeleteContaining(ctx, token)
 }
 
 func main() {
@@ -138,10 +133,6 @@ func main() {
 	dbPath := flag.String("db", "/data/clipstore.db",
 		"SQLite database path. Must be on a persistent volume; /data is the only "+
 			"writable mount besides /tmp in the container image.")
-	purge := flag.Bool("purge-token-clips", false,
-		"delete every stored clip whose body or device contains this server's own "+
-			"token, print how many, and exit. Stop the running server first (one "+
-			"clipstore per database).")
 	flag.Parse()
 
 	token := os.Getenv(tokenEnv)
@@ -157,15 +148,6 @@ func main() {
 	}
 	defer store.Close()
 
-	if *purge {
-		n, err := purgeTokenClips(context.Background(), store, token)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("clipstore: deleted %d clip(s) containing this server's token\n", n)
-		return
-	}
 	reportTokenClips(context.Background(), store, token, os.Stderr)
 
 	api := NewAPI(store, token, time.Now)

@@ -1,8 +1,7 @@
 package main
 
-// The change feed (GET /v1/clips?after=&wait=) and the exact fetch
-// (GET /v1/clips/{id}), driven over real HTTP against a real Store, so the
-// waiter, the store and the routing are exercised together.
+// The change feed (GET /v1/clips?after=&wait=), driven over real HTTP against
+// a real Store, so the waiter, the store and the routing are exercised together.
 
 import (
 	"bytes"
@@ -176,51 +175,14 @@ func TestFeedParametersAreValidatedNotClamped(t *testing.T) {
 	}
 }
 
-func TestFetchingOneClipByID(t *testing.T) {
+func TestTheFeedRequiresTheToken(t *testing.T) {
 	srv, _ := feedServer(t)
-	c := postClip(t, srv, "exact fetch", "mcp")
-	code, raw := do(t, srv, "GET", "/v1/clips/"+strconv.FormatInt(c.ID, 10), "", true)
-	var got Clip
-	_ = json.Unmarshal(raw, &got)
-	if code != 200 || got != c {
-		t.Fatalf("GET /v1/clips/%d: %d %s, want %+v", c.ID, code, raw, c)
-	}
-	code, raw = do(t, srv, "GET", "/v1/clips/999999", "", true)
-	if code != http.StatusNotFound || !bytes.Contains(raw, []byte(`"no_such_clip"`)) {
-		t.Fatalf("absent id: %d %s, want 404 no_such_clip", code, raw)
-	}
-	if code, _ = do(t, srv, "GET", "/v1/clips/abc", "", true); code != http.StatusBadRequest {
-		t.Fatalf("non-numeric id: %d, want 400", code)
-	}
-}
-
-func TestBothNewRoutesRequireTheToken(t *testing.T) {
-	srv, _ := feedServer(t)
-	c := postClip(t, srv, "secret clip", "mcp")
-	for _, path := range []string{"/v1/clips?after=0&wait=1", "/v1/clips/" + strconv.FormatInt(c.ID, 10)} {
+	postClip(t, srv, "secret clip", "mcp")
+	for _, path := range []string{"/v1/clips?after=0&wait=1", "/v1/clips?after=0"} {
 		code, raw := do(t, srv, "GET", path, "", false)
 		if code != http.StatusUnauthorized || bytes.Contains(raw, []byte("secret clip")) {
 			t.Errorf("GET %s without a token: %d %s, want 401 and no body", path, code, raw)
 		}
-	}
-}
-
-func TestADedupBumpDoesNotReappearInTheFeed(t *testing.T) {
-	// CHARACTERIZATION, documented in README.md: the cursor is the id, and a
-	// re-capture of an identical body bumps the EXISTING row rather than
-	// creating one, so it is not "after" a cursor that already passed it.
-	srv, _ := feedServer(t)
-	a := postClip(t, srv, "same text", "mcp")
-	postClip(t, srv, "other", "phone")
-	_, fb, _ := feed(t, srv, "after=0")
-	cursor := (*fb.Clips)[len(*fb.Clips)-1].ID
-	again := postClip(t, srv, "same text", "mcp")
-	if again.ID != a.ID {
-		t.Fatalf("dedup bump changed the id: %d -> %d", a.ID, again.ID)
-	}
-	_, fb, _ = feed(t, srv, "after="+strconv.FormatInt(cursor, 10))
-	if len(*fb.Clips) != 0 {
-		t.Fatalf("a bump reappeared in the feed: %+v", *fb.Clips)
 	}
 }
 

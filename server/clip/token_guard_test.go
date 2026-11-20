@@ -76,36 +76,13 @@ func TestTheStartupScanCountsTokenClipsWithoutPrintingThem(t *testing.T) {
 	if strings.Contains(msg, feedToken) || strings.Contains(msg, "pasted") || strings.Contains(msg, "harmless") {
 		t.Fatalf("the scan printed clip content or the token: %q", msg)
 	}
-	if !strings.Contains(msg, "-purge-token-clips") {
-		t.Fatalf("the scan does not say how to delete them: %q", msg)
+	if !strings.Contains(msg, "rotate the token with ./setup --rotate") {
+		t.Fatalf("the scan does not tell the operator to rotate the token: %q", msg)
 	}
 
 	var clean bytes.Buffer
 	reportTokenClips(context.Background(), newTestStore(t), feedToken, &clean)
 	if clean.Len() != 0 {
 		t.Fatalf("a clean store produced a warning: %q", clean.String())
-	}
-}
-
-func TestPurgeDeletesOnlyTokenClipsAndLeavesNothingInTheIndex(t *testing.T) {
-	s := newTestStore(t)
-	seedRows(t, s,
-		[2]string{"pasted " + feedToken, "phone"},
-		[2]string{"harmless", feedToken},
-		[2]string{"keep me", "laptop"})
-	n, err := purgeTokenClips(context.Background(), s, feedToken)
-	if err != nil || n != 2 {
-		t.Fatalf("purge deleted %d (%v), want 2", n, err)
-	}
-	left, _ := s.List(context.Background(), 10, "")
-	if len(left) != 1 || left[0].Body != "keep me" {
-		t.Fatalf("purge left %+v, want only the unrelated clip", left)
-	}
-	hits, _ := s.List(context.Background(), 10, feedToken[:12])
-	if len(hits) != 0 {
-		t.Fatalf("the search index still finds the purged token: %+v", hits)
-	}
-	if c, _ := s.CountContaining(context.Background(), feedToken); c != 0 {
-		t.Fatalf("%d token clips remain after purge", c)
 	}
 }

@@ -65,7 +65,6 @@ func (f failingStore) Put(context.Context, string, string, int64) (Clip, bool, e
 }
 func (f failingStore) List(context.Context, int, string) ([]Clip, error) { return nil, f.err }
 func (f failingStore) After(context.Context, int64, int) ([]Clip, error) { return nil, f.err }
-func (f failingStore) Get(context.Context, int64) (Clip, error)          { return Clip{}, f.err }
 func (f failingStore) Delete(context.Context, int64) error               { return f.err }
 func (f failingStore) Ping(context.Context) error                        { return f.err }
 
@@ -82,7 +81,6 @@ func (r *recordingStore) Put(_ context.Context, body, device string, at int64) (
 	return Clip{ID: 1, Body: body, Device: device, CreatedAt: at}, false, nil
 }
 func (r *recordingStore) After(context.Context, int64, int) ([]Clip, error) { return []Clip{}, nil }
-func (r *recordingStore) Get(context.Context, int64) (Clip, error)          { return Clip{}, ErrNoSuchClip }
 func (r *recordingStore) List(_ context.Context, limit int, q string) ([]Clip, error) {
 	r.lastLimit, r.lastQuery = limit, q
 	if r.clips == nil {
@@ -131,7 +129,6 @@ func decodeErr(t *testing.T, rec *httptest.ResponseRecorder) errorResponse {
 var probeFor = map[string]struct{ method, target, body string }{
 	"POST /v1/clips":        {"POST", "/v1/clips", `{"body":"x","device":"d"}`},
 	"GET /v1/clips":         {"GET", "/v1/clips", ""},
-	"GET /v1/clips/{id}":    {"GET", "/v1/clips/1", ""},
 	"DELETE /v1/clips/{id}": {"DELETE", "/v1/clips/1", ""},
 	"GET /healthz":          {"GET", "/healthz", ""},
 }
@@ -181,7 +178,6 @@ func TestTheRouteLedgerIsExactlyTheseRoutes(t *testing.T) {
 	wantGated := []string{
 		"POST /v1/clips",
 		"GET /v1/clips",
-		"GET /v1/clips/{id}",
 		"DELETE /v1/clips/{id}",
 	}
 	wantPublic := []string{

@@ -1,7 +1,7 @@
 package main
 
-// The change feed: GET /v1/clips?after=<id>&wait=<seconds> (long-poll), and the
-// exact fetch GET /v1/clips/{id}.
+// The change feed: GET /v1/clips?after=<seq>&wait=<seconds> (long-poll). It
+// returns full clips, so no separate fetch-by-id route exists.
 //
 // HOW A WAITER IS WOKEN, AND WHY IT CANNOT MISS A POST. `changes` hands out the
 // CURRENT generation channel; every successful Put closes it and installs a
@@ -84,7 +84,7 @@ func (a *API) feedClips(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 	after, err := strconv.ParseInt(qs.Get("after"), 10, 64)
 	if err != nil || after < 0 {
-		writeErr(w, http.StatusBadRequest, "invalid_after", "`after` must be a non-negative integer clip id")
+		writeErr(w, http.StatusBadRequest, "invalid_after", "`after` must be a non-negative integer seq (the largest `seq` seen)")
 		return
 	}
 	if qs.Has("q") {
@@ -161,23 +161,4 @@ func (c *changes) isStopped() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stopped
-}
-
-// getClip serves GET /v1/clips/{id}.
-func (a *API) getClip(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id < 1 {
-		writeErr(w, http.StatusBadRequest, "invalid_id", "the path id must be a positive integer")
-		return
-	}
-	clip, err := a.store.Get(r.Context(), id)
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusOK, clip)
-	case errors.Is(err, ErrNoSuchClip):
-		writeErr(w, http.StatusNotFound, "no_such_clip", "no clip with id "+strconv.FormatInt(id, 10))
-	default:
-		log.Printf("clipstore: GET /v1/clips/%d: %v", id, err)
-		writeErr(w, http.StatusServiceUnavailable, "store_unreadable", "the clip store could not be read")
-	}
 }

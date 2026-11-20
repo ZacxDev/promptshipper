@@ -25,8 +25,7 @@ endpoint and nothing else; see "`/healthz` is unauthenticated" below. Errors are
 |---|---|
 | `POST /v1/clips` | `{"body":…,"device":…}` → `201` with the clip, or `200` with `"deduped":true` when an identical body already existed and was bumped to the front |
 | `GET /v1/clips?limit=N&q=…` | `{"clips":[…],"limit":N,"query":"…"}`, newest first |
-| `GET /v1/clips?after=ID&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N}`, clips with `id > ID`, **oldest first**; see *Change feed* |
-| `GET /v1/clips/{id}` | `200` with the clip, or `404 no_such_clip` |
+| `GET /v1/clips?after=SEQ&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N}`, clips with `seq > SEQ`, **in `seq` order**; see *Change feed* |
 | `DELETE /v1/clips/{id}` | `204`, or `404 no_such_clip` |
 | `GET /healthz` | `{"status":"ok"}`, or `503 store_unreadable`. **Probe-only, and the one route that needs no token.** Still reads a row. |
 
@@ -87,23 +86,28 @@ not trigram. The index holds no bodies, so a rebuild loses nothing.
 
 ### Change feed (long-poll)
 
-`GET /v1/clips?after=<id>&wait=<seconds>` is how a device learns about new
+`GET /v1/clips?after=<seq>&wait=<seconds>` is how a device learns about new
 clips without hammering the list:
 
-* It returns every clip with `id > after`, **oldest first** (ascending id), up
-  to `limit` (default 100, max 500) — **as soon as at least one exists**.
+* Every clip carries **`seq`**: a counter that only ever grows. It is set when
+  a clip is created **and again every time an identical body is re-POSTed**
+  (a dedup bump), and a deleted row's `seq` is never reused.
+* The feed returns every clip with `seq > after`, **in `seq` order** (oldest
+  change first), up to `limit` (default 100, max 500) — **as soon as at least
+  one exists**. A re-pushed body is therefore delivered again, after the
+  cursor, even though its `id` is unchanged.
 * With `wait` (0–60 s, default 0) and nothing new, the request is held open
-  and answers the moment a clip is POSTed, or `{"clips":[]}` when `wait`
-  expires. Never `null`.
-* The cursor is the largest `id` you have seen; poll again with it. Start with
-  `after=0`. To skip history, read the feed with `wait=0` until it returns
-  fewer than `limit` rows and keep its largest `id` — **not** the first row of
-  the newest-first list, which a dedup bump can make an old id.
-* Ids only grow (`AUTOINCREMENT`), so a row never appears behind a cursor
-  that has passed it. They have gaps; never infer anything from them.
-* ⚠ **A dedup bump is not in the feed.** Re-POSTing a body that already
-  exists bumps that row (same `id`), so a cursor past it does not see it
-  again. A pusher that needs the same text to arrive twice must vary it.
+  and answers the moment a clip is POSTed (created or bumped), or
+  `{"clips":[]}` when `wait` expires. Never `null`.
+* **The cursor is the largest `seq` you have seen** — poll with
+  `after=<last seq>`. Start with `after=0`. To skip history, read the feed with
+  `wait=0` until it returns fewer than `limit` rows and keep its largest `seq`.
+  Never use `id` as the cursor.
+* `seq` is not the list order: `GET /v1/clips` without `after` is still the
+  newest-first list by `created_at`, unchanged.
+* A database created before `seq` existed is migrated on start: existing rows
+  get `seq = id` (so a cursor taken from the old id-based feed keeps its
+  place), and new values start above every id ever issued.
 * `after` cannot be combined with `q` (`400 invalid_feed`); `wait` without
   `after`, or outside 0–60, is `400 invalid_wait`; a negative or non-numeric
   `after` is `400 invalid_after`.
@@ -119,12 +123,13 @@ Long-poll rather than SSE: one ordinary request/response per poll survives
 flaky mobile networks, proxies and an Android foreground service being
 suspended, with no reconnection protocol to get right.
 
-#### The phone's auto-copy contract
+#### The auto-copy contract (for a feed-aware app)
 
-The Android app polls this feed while its bubble service runs and **auto-copies
-to the system clipboard ONLY clips whose `device` is exactly `mcp`** — text an
-agent pushed via the MCP server. Every other clip (captured on a phone, a
-laptop, by snip) is listed but never copied unasked. So:
+No app listens to this feed yet. The Android app **will** poll it while its
+bubble service runs, and a feed-aware app **will auto-copy to the system
+clipboard ONLY clips whose `device` is exactly `mcp`** — text an agent pushed
+via the MCP server. Every other clip (captured on a phone, a laptop, by snip)
+will be listed but never copied unasked. So:
 
 * the MCP server (and anything else meant to land on the phone's clipboard)
   POSTs with `"device":"mcp"`;
@@ -144,19 +149,15 @@ Any other value, including other 64-hex strings, is stored as usual.
 
 At startup the server counts stored clips that contain its token (rows saved
 before this guard existed) and, if there are any, logs **only the count** and
-how to delete them:
+the fix: **rotate the token** with `./setup --rotate`, then re-pair your
+devices. Deleting those clips is not the fix — a token that sat in a readable
+clip may already have been read, and only rotation retires it. (After rotation
+the old value is no longer a credential; delete the clips with
+`DELETE /v1/clips/{id}` if you want them gone.)
 
-```sh
-# one clipstore per database: stop the running one first
-docker compose --project-directory deploy/compose stop clip
-docker compose --project-directory deploy/compose run --rm clip -purge-token-clips
-docker compose --project-directory deploy/compose start clip
-# outside compose: clipstore -db /path/to/clipstore.db -purge-token-clips
-```
-
-`-purge-token-clips` deletes those rows (their search index entries go with
-them), prints how many, and exits. If the token may have been read already,
-rotate it instead (`./setup --rotate`, then re-pair).
+⚠ **Known limitation:** the clip server only knows its OWN token. The STT
+server's token is not checked, so a copied STT token would be stored like any
+other text.
 
 ### Fails loud, never empty
 
@@ -223,7 +224,6 @@ store: SQLite serves `count(*)` from its page cache (measured against
 | `$CLIPSTORE_TOKEN` | the bearer token. **Required**, minimum 24 bytes; a shorter or absent one is `exit 2` at startup, never a default and never an open listener. `./setup` generates one into `deploy/compose/.env`. |
 | `-addr` | default `:8139` |
 | `-db` | default `/data/clipstore.db` |
-| `-purge-token-clips` | delete stored clips containing this server's token, print the count, exit (see above) |
 
 ## What is deliberately absent
 

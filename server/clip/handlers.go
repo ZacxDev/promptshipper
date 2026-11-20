@@ -77,7 +77,6 @@ type clipStore interface {
 	Put(ctx context.Context, body, device string, nowMillis int64) (Clip, bool, error)
 	List(ctx context.Context, limit int, q string) ([]Clip, error)
 	After(ctx context.Context, after int64, limit int) ([]Clip, error)
-	Get(ctx context.Context, id int64) (Clip, error)
 	Delete(ctx context.Context, id int64) error
 	Ping(ctx context.Context) error
 }
@@ -137,7 +136,6 @@ func (a *API) routeTable() (gated, public []muxRoute) {
 	gated = []muxRoute{
 		{"POST /v1/clips", a.postClip},
 		{"GET /v1/clips", a.listClips},
-		{"GET /v1/clips/{id}", a.getClip},
 		{"DELETE /v1/clips/{id}", a.deleteClip},
 	}
 	public = []muxRoute{
