@@ -41,6 +41,45 @@ jobs:
           go vet ./...
           go test -count=1 ./...
 
+  # The MCP server (server/mcp). Its seam test (realclip_test.go) runs the tools
+  # against the REAL clipstore built from server/clip, so a change on either side
+  # of the clip API is caught here. REQUIRE_REAL_CLIP turns that test's local
+  # skip into a failure, and the log is counted so a skip cannot read as green.
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/mcp/go.mod
+          cache-dependency-path: |
+            server/mcp/go.sum
+            server/clip/go.sum
+      - name: build clipstore for the seam test
+        working-directory: server/clip
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o "$RUNNER_TEMP/clipstore" .
+      - name: gofmt
+        working-directory: server/mcp
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet + test (CGO off, as the binary is built)
+        working-directory: server/mcp
+        # 🔴 `shell: bash` is what turns on pipefail (GitHub runs it as
+        # `bash --noprofile --norc -eo pipefail`). Left unset, the step runs
+        # under `bash -e` only, the exit status of `go test | tee` is tee's, and
+        # failing tests pass the job — measured in the round-1 audit.
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          CLIPSTORE_BIN: ${{ runner.temp }}/clipstore
+          REQUIRE_REAL_CLIP: "1"
+        run: |
+          go vet ./...
+          go test -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -q -- '--- PASS: TestAgainstTheRealClipstore' "$RUNNER_TEMP/test.log"
+          ! grep -q -- '--- SKIP' "$RUNNER_TEMP/test.log"
+
   stt:
     runs-on: ubuntu-latest
     defaults:
