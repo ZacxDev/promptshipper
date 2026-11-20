@@ -1,0 +1,1555 @@
+package dev.zacx.promptshipper
+
+import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.TextView
+import android.widget.Toast
+import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/**
+ * The dictation overlay: floating dialog-style activity opened by
+ * [BubbleService], and by nothing else.
+ *
+ * 🔴 **Every other entry point this file's comments have ever named is gone.**
+ * The Quick Settings tile used to be the headline one and is now the bubble's
+ * on/off switch ([DictaTileService]), which opens nothing; the persistent
+ * trigger notification and `MainActivity`'s "Try dictation now" are deleted,
+ * because tapping the floating bubble is the only way a recording may begin.
+ * The enumerations below have been corrected to name the INTENT instead of its
+ * callers; if you find another "the tile, the notification and …" list in this
+ * file, it is stale rather than a surface you have not met.
+ *
+ * Flow: a recording is started elsewhere → live transcription → edit →
+ * Copy / Send.
+ *
+ * 🔴 **This card never STARTS a recording on the user's behalf.** The only
+ * control that opens a new capture is the floating bubble ([BubbleService]).
+ * `@id/mic_button` therefore wears exactly two roles here, both of them
+ * reactions to a state the card is already in:
+ *
+ *  * **STOP** — [showStopControl], for a capture that is already running
+ *    (`onCreate` auto-starts one for the notification / MainActivity
+ *    launches, and those recordings need an end control);
+ *  * **the mic-denied fallback** — [showSystemVoiceFallback], which hands over
+ *    to the system voice-typing UI and opens no microphone of our own.
+ *
+ * In every other state the control is [hideMicControl]-ed. The role it used to
+ * have — a "Speak" button sitting on the finished transcript, one tap from a
+ * second recording — is gone, string included.
+ */
+class DictateActivity : Activity() {
+
+    private lateinit var statusText: TextView
+    private lateinit var textInput: EditText
+    private lateinit var micButton: Button
+    private lateinit var attachmentNote: TextView
+    private lateinit var levelMeter: android.widget.ProgressBar
+    private lateinit var engineBadge: TextView
+
+    /**
+     * Shown only on a history card, where [micButton] is hidden. See the
+     * layout's comment on why this is a second control and not the mic pill
+     * wearing a different label.
+     */
+    private lateinit var retranscribeButton: Button
+    private lateinit var saveAudioButton: ImageButton
+
+    /**
+     * The stored dictation this card is showing, or null when it is showing a
+     * live one. Written on the main thread only (the worker hands its result
+     * back through `runOnUiThread`).
+     */
+    private var historyItem: DictationHistoryStore.Item? = null
+
+    /**
+     * Which revision of this card the views belong to.
+     *
+     * 🔴 Bumped whenever the card is re-purposed — by [populateFromHistory]
+     * and by [attachToBubbleSession], which also gates the history store's
+     * asynchronous read so a stored transcript cannot land on a card that has
+     * since gone live again. A [SessionCallbacks] captures it at construction
+     * and refuses once the two differ, so a late callback from a session the
+     * card has abandoned cannot write views that now belong to something
+     * else. See [SessionCallbacks.stale] for the sequence that a
+     * "is this a history card" flag could not survive.
+     *
+     * Bumped SYNCHRONOUSLY, before the async store read: between
+     * `populateFromHistory` and that read landing, the stopped session is
+     * still finishing its upload and is still wired.
+     */
+    private var cardGeneration = 0
+
+    /**
+     * Reads and re-uploads of stored dictations.
+     *
+     * Separate from [captureWorker], which is created on demand for a single
+     * blocking screenshot round trip and shut down with it. A re-transcribe
+     * can be minutes long (the ladder sleeps between retries and polls
+     * `/healthz`), so sharing one executor would mean a screenshot queued
+     * behind an upload.
+     */
+    private val historyWorker: java.util.concurrent.ExecutorService =
+        Executors.newSingleThreadExecutor()
+
+    private var speech: SpeechHelper? = null
+    private val finalText = StringBuilder()
+    private var lastPartial = ""
+
+    /**
+     * The remote-first dictation session: one microphone, the phone's
+     * recogniser fed from it through a pipe, and the self-hosted service
+     * producing the authoritative transcript.
+     */
+    private var session: DictationSession? = null
+    private var settings: SttSettings? = null
+
+    /**
+     * True once the server's transcript has landed.
+     *
+     * Guards the one ordering hazard in the handover: the phone's *final*
+     * result can arrive after the server's, and without this flag it would
+     * overwrite the better transcript with the worse one.
+     */
+    private var haveRemoteTranscript = false
+
+    /**
+     * Set once a capture succeeds. `internal` rather than `private` only so a
+     * unit test can put the activity into the "a screenshot is attached" state
+     * without a real MediaProjection — see DictateShareTest.
+     */
+    internal var screenshotUri: Uri? = null
+
+    /** Off-main-thread worker for the blocking capture round trip. */
+    private var captureWorker: java.util.concurrent.ExecutorService? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_dictate)
+        // Must run AFTER setContentView: PhoneWindow.generateLayout() resets a
+        // floating window to WRAP_CONTENT x WRAP_CONTENT while inflating.
+        // 🔴 FloatingWindow is the ONE owner of this rule — do not re-inline it
+        // here. It used to live in this file as applyFloatingWindowSize(), and
+        // the second floating surface (SnipPickerActivity) shipped without it.
+        FloatingWindow.applySize(this)
+
+        statusText = findViewById(R.id.status_text)
+        textInput = findViewById(R.id.dictated_text)
+        micButton = findViewById(R.id.mic_button)
+        attachmentNote = findViewById(R.id.attachment_note)
+        levelMeter = findViewById(R.id.level_meter)
+        engineBadge = findViewById(R.id.engine_badge)
+        retranscribeButton = findViewById(R.id.retranscribe_button)
+        saveAudioButton = findViewById(R.id.save_audio_button)
+
+        // Robolectric can create the real Activity but cannot provide an
+        // AndroidKeyStore, so settings construction is allowed to fail here
+        // without taking the whole overlay down with it. In that state the
+        // remote path reports "not configured" and the phone's recogniser is
+        // used — which is exactly the documented degradation.
+        settings = try {
+            SttSettings.create(this)
+        } catch (_: Throwable) {
+            null
+        }
+
+        micButton.setOnClickListener { toggleDictation() }
+        retranscribeButton.setOnClickListener { retranscribe() }
+        saveAudioButton.setOnClickListener { saveAudio() }
+        // Copy/Screenshot/Send/Close are ImageButtons (ImageView subclasses, NOT
+        // Buttons) — findViewById<Button> on them would throw
+        // ClassCastException. Pinned by DictateActionViewTypesTest.
+        findViewById<ImageButton>(R.id.copy_button).setOnClickListener { copyToClipboard() }
+        findViewById<ImageButton>(R.id.screenshot_button)
+            .setOnClickListener { requestScreenshot() }
+        findViewById<ImageButton>(R.id.share_button).setOnClickListener { shareText() }
+        findViewById<ImageButton>(R.id.close_button).setOnClickListener { finish() }
+
+        // Which of the three launch modes this is — see applyLaunchIntent,
+        // which holds the reasoning that used to sit here.
+        applyLaunchIntent(intent)
+    }
+
+    /**
+     * 🔴 The floating bubble must not be on top of this card.
+     *
+     * [BubbleService]'s overlay is an always-on-top window, so with the card
+     * up it is drawn over it and its mic button is tappable — a second
+     * dictation started from the view that exists to show the one just
+     * finished. Measured on the device: the control visible over a history
+     * card was never `@id/mic_button` (which `populateFromHistory` sets GONE)
+     * but the bubble behind it.
+     *
+     * The hold is taken for the card's VISIBLE lifetime (`onStart`), not its
+     * foreground one (`onResume`): the bubble is drawn whenever the card is on
+     * screen, including while a translucent system dialog — the
+     * MediaProjection consent prompt, most importantly — has focus on top of
+     * it.
+     *
+     * [OverlayVisibility.Holder.CARD] rather than a bare "hide": the capture
+     * path holds the same overlay down through
+     * [OverlayVisibility.Holder.CAPTURE], and its restore must not undo this
+     * one. See [OverlayVisibility].
+     */
+    override fun onStart() {
+        super.onStart()
+        OverlayVisibility.setHidden(OverlayVisibility.Holder.CARD, true)
+    }
+
+    /**
+     * The bubble comes back as the card leaves the screen — before
+     * [onDestroy], because a card that is merely stopped (the user switched
+     * away) is not on top of anything, and Dicta's always-available trigger
+     * must not be gone until the Activity is finally collected.
+     */
+    override fun onStop() {
+        OverlayVisibility.setHidden(OverlayVisibility.Holder.CARD, false)
+        super.onStop()
+    }
+
+    /**
+     * The three ways this card can be opened, in one place.
+     *
+     * 🔴 **The auto-start in the last arm is the single highest-risk line in
+     * the bubble redesign.** It used to be unconditional, because opening this
+     * card and starting to record were the same event. They are not any more:
+     * when the bubble opens the card, capture has ALREADY happened and the
+     * upload is already in flight, so starting again would construct a second
+     * `DictationSession` — a second `AudioRecord` — while the first one's file
+     * is being POSTed.
+     *
+     * That failure is silent. Android resolves concurrent capture by feeding
+     * the loser bit-exact zeros: `startRecording()` succeeds, `read()` returns
+     * the full byte count, no exception, no error callback. What reaches the
+     * user is an empty or invented transcript, which reads as a broken server
+     * and gets investigated as one. `DictationSessionLedgerTest` is the ledger
+     * that keeps the set of session owners honest.
+     *
+     * 🔴 **The history arm is a third route to that same hazard**, so it must
+     * not reach [startDictation] either. A history card has no capture of its
+     * own to protect, but the bubble's may well be running — the bubble stays
+     * reachable while this card is up.
+     *
+     * @param launch the intent to read. Passed rather than read from
+     *   `getIntent()` so that [onNewIntent] cannot accidentally branch on the
+     *   *original* intent — which is precisely the bug `setIntent` exists to
+     *   prevent, and writing it this way means forgetting `setIntent` cannot
+     *   silently change what this function sees.
+     */
+    private fun applyLaunchIntent(launch: Intent?) {
+        val historyId = launch?.getStringExtra(DictateLaunch.EXTRA_HISTORY_ID)
+        if (launch?.getBooleanExtra(DictateLaunch.EXTRA_ATTACH_SESSION, false) == true) {
+            attachToBubbleSession()
+        } else if (historyId != null) {
+            populateFromHistory(historyId)
+        } else if (hasMicPermission()) {
+            startDictation()
+        } else {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
+        }
+    }
+
+    /**
+     * 🔴 A second intent arriving at a card that is already on top.
+     *
+     * This activity is `launchMode="singleTop"` and **overrode this nowhere**.
+     * So with the card open, picking a history chip never reached `onCreate`,
+     * the new extra was silently discarded, and the card went on showing
+     * whatever it already had: the user picks item 3 and sees item 1, with no
+     * error anywhere. The reveal makes that a routine sequence rather than an
+     * exotic one, because the bubble is reachable while the card is up.
+     *
+     * 🔴 **[setIntent] is half the fix and is not optional.** Without it
+     * `getIntent()` keeps returning the *original* intent for the rest of this
+     * activity's life, so every later read of an extra — here or in any code
+     * added afterwards — answers for a launch that is two taps stale.
+     *
+     * ## Why only the history arm is re-run
+     *
+     * Deliberately narrower than [applyLaunchIntent]. Re-running the whole
+     * branch would mean a *plain* launch — an overlay intent carrying neither
+     * [DictateLaunch.EXTRA_ATTACH_SESSION] nor
+     * [DictateLaunch.EXTRA_HISTORY_ID] — delivered to an already-open card now
+     * starting a dictation where today it does nothing: a behaviour change to
+     * another arm, in a change about this one. (This enumerated the callers
+     * instead and had to be recounted twice as they went away — "a Quick
+     * Settings tap … three entry points, in a change about a fourth", then
+     * "the notification action or *Try dictation now* … so the count is two".
+     * The argument never depended on the count, so it is stated without one.)
+     * 🔴 The ATTACH arm is the exception, and it is re-run. This paragraph
+     * used to say it was "left alone" because it "survives a dropped extra
+     * today only because `busSink` stays registered … which is luck rather
+     * than design". Round 4 of `#17` measured what happened when that luck
+     * ran out: once the staleness gate existed, the still-registered sink was
+     * a MUTED one, so a new bubble dictation vanished with no recovery.
+     * Re-running the attach arm rebuilds the sink, which is the design the
+     * luck was standing in for.
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val historyId = intent?.getStringExtra(DictateLaunch.EXTRA_HISTORY_ID)
+        if (historyId != null) {
+            populateFromHistory(historyId)
+            return
+        }
+        // 🔴 The ATTACH arm, re-run. Round 4 of #17 measured why: with the
+        // card showing a history item, a NEW bubble dictation fires this
+        // intent, and returning here left `busSink` as the sink built before
+        // the history switch — which [SessionCallbacks.stale] mutes. Nothing
+        // else on this path builds a fresh sink (`micButton` is GONE on a
+        // history card, so `startDictation` is unreachable), and
+        // `BubbleSessionBus.deliver` sees a non-empty sink list so it buffers
+        // nothing either. The dictation uploaded, stored, and NEVER appeared,
+        // with no recovery but closing the card.
+        //
+        // This is the widening the KDoc above declined, taken deliberately
+        // and kept to the ATTACH arm only: the tile and the notification send
+        // a plain `intent()` with neither extra and still fall through to the
+        // `return` below, so their behaviour is unchanged. That narrowness is
+        // pinned by `anIntentWithNoHistoryIdDoesNotRestartTheCard`.
+        if (intent?.getBooleanExtra(DictateLaunch.EXTRA_ATTACH_SESSION, false) == true) {
+            attachToBubbleSession()
+        }
+    }
+
+    /**
+     * Binds the card to the recording the bubble already made.
+     *
+     * The status line is set up front rather than waiting for the session's own
+     * first message: by the time this activity is on screen the upload may
+     * already be several hundred milliseconds old, and a card that opens blank
+     * reads as a card that did nothing.
+     *
+     * [BubbleSessionBus] then replays anything said while nothing was attached
+     * — which can include the transcript itself on a short recording — so the
+     * engine badge and the status line stay honest about which engine produced
+     * what is on screen.
+     */
+    private fun attachToBubbleSession() {
+        // 🔴 Reset the remote-wins latch, exactly as [startDictation] does.
+        // Without it, a card that already received ONE remote transcript —
+        // the ordinary success path — drops the NEXT dictation's text
+        // whenever that one falls back to the phone engine, because
+        // SessionCallbacks refuses a non-remote transcript once the latch is
+        // set. Round 5 of #17 measured the round-4 symptom surviving on this
+        // sibling path: "uploaded, stored, never appeared".
+        haveRemoteTranscript = false
+        // 🔴 This IS a re-purpose, so it bumps the generation — [cardGeneration]
+        // says "bumped whenever the card is re-purposed", and until now only
+        // [populateFromHistory] did. The case it closes: the history read is
+        // asynchronous, so a chip tap followed by a new bubble dictation can
+        // land the stored transcript on a card that is live again, overwriting
+        // it. The bump happens BEFORE `uiCallbacks()` below, so this attach's
+        // own sink is born current; what it stales out is the previous
+        // session's sink, which is the same thing `BubbleService.generation`
+        // does on every recording.
+        cardGeneration++
+        // 🔴 RE-PURPOSE the card, not just its sink. Re-running this arm on a
+        // card showing history used to leave it dressed as a history card
+        // with a live session behind it: micButton GONE (a live dictation
+        // with NO mic control), Re-transcribe VISIBLE and enabled against the
+        // PREVIOUS recording, and historyEvents — which carry no staleness
+        // gate — able to write the same views the live session writes. Round
+        // 5 of #17, F2.
+        historyItem = null
+        retranscribeButton.visibility = View.GONE
+        retranscribeButton.isEnabled = false
+        // Same re-purpose, same reason: this card has no audio of its own yet,
+        // and a Save-audio left enabled would hand out the PREVIOUS
+        // recording. It re-enables from onHistorySaved, via armAudioActions.
+        saveAudioButton.isEnabled = false
+        // 🔴 NOT a "Speak" button. The bubble has already recorded and the
+        // upload is in flight; there is nothing for the user to start here,
+        // and a start control on this card is exactly what the operator asked
+        // to remove. The STOP role does not apply either — this card does not
+        // own the capture, which ended before the card existed.
+        hideMicControl()
+        // 🔴 Take focus OFF the transcript box, and this is load-bearing.
+        // With micButton hidden, focus falls to the only remaining
+        // focusable-in-touch-mode view — the box — and `renderPreview`
+        // refuses to write to a FOCUSED box ("don't clobber the cursor while
+        // the user is editing"). Re-purposing without this left the incoming
+        // transcript in `finalText` and NEVER ON SCREEN. MEASURED:
+        // finalText='TEXT FROM THE NEW DICTATION' while the box still read
+        // the stored one. `clearFocus()` is not enough — the box would be the
+        // only focusable view at that instant and immediately takes it back,
+        // which is why the park below targets the card root rather than
+        // clearing. It used to target micButton; a hidden view cannot hold
+        // focus, so that route died with the start role.
+        parkFocusOffTheTranscript()
+        // The stored dictation is no longer what this card shows.
+        finalText.setLength(0)
+        lastPartial = ""
+        statusText.text = getString(R.string.stt_uploading)
+        levelMeter.visibility = View.INVISIBLE
+        // 🔴 Detach first, so this is IDEMPOTENT. It is now reachable twice in
+        // one card's life (see [onNewIntent]), and attaching without
+        // detaching would leave the previous sink registered — every bus
+        // event delivered twice, and the stale sink keeping `sinks` non-empty
+        // so nothing ever buffers.
+        busSink?.let { BubbleSessionBus.detach(it) }
+        val sink = uiCallbacks()
+        busSink = sink
+        BubbleSessionBus.attach(sink)
+    }
+
+    /** Non-null only while this card is attached to a bubble session. */
+    private var busSink: DictationSession.Callbacks? = null
+
+    // --- the history card ----------------------------------------------------
+
+    /**
+     * Shows a **stored** dictation: its transcript, which engine produced it,
+     * and an offer to send the audio again.
+     *
+     * 🔴 Constructs no [DictationSession] and touches no microphone — not even
+     * to check it. [micButton] is hidden rather than left enabled, because the
+     * one thing this screen must not do is open a capture, and a mic button
+     * that is on screen and wired to `toggleDictation()` is exactly that, one
+     * tap away. `DictateHistoryCardTest` asserts both the hidden button and
+     * that [MicrophoneOwner] is still free afterwards.
+     *
+     * The read is on [historyWorker]: it hits `index.json`, and
+     * [DictationHistoryStore.recent] rewrites that index when an audio file
+     * has gone missing. The card therefore fills in a moment after it opens,
+     * which is the same shape `SettingsActivity`'s usage line uses.
+     */
+    private fun populateFromHistory(id: String) {
+        // 🔴 CLOSE THE MICROPHONE FIRST. This hides `micButton`, which is the
+        // card's ONLY stop control — so without this a history intent
+        // arriving at a card with a live dictation left the recording running
+        // with no reachable way to stop it, its partials interleaving into
+        // the text area, while the status line read "the microphone is off."
+        //
+        // Reachable because the bubble's machine and the card's session are
+        // independent: open the card with a PLAIN overlay intent — one
+        // carrying no EXTRA_ATTACH_SESSION, so onCreate auto-starts a
+        // dictation — the bubble machine stays IDLE so a long press still
+        // reveals, and a chip tap delivers onNewIntent to the card on top.
+        // Audit round 1 of #17, F3.
+        //
+        // 🔴 This route has been respelled twice as its callers went away:
+        // "open the card from the QS tile", then "from the notification's
+        // Dictate action (or MainActivity's Try dictation now)". The tile
+        // opens no card, and the other two are deleted. The MECHANISM is
+        // unchanged and the guard is still reachable — it is a property of the
+        // INTENT, not of whoever sends it, which is why it is now written that
+        // way and carries no count. DictateHistoryCardTest drives it directly.
+        // Only the naming has ever changed; no new justification was invented
+        // for this guard.
+        //
+        // Stop rather than discard, for the reason requestScreenshot already
+        // gives: a finalised recording is uploaded, an abandoned one is lost.
+        stopAnyLiveCapture()
+        // 🔴 Immediately after the stop and BEFORE the async read: the
+        // session we just stopped is still alive finishing its upload, and
+        // its transcript/status/level callbacks are still wired. See
+        // [cardGeneration].
+        cardGeneration++
+        val generation = cardGeneration
+        historyItem = null
+        levelMeter.visibility = View.INVISIBLE
+        hideMicControl()
+        // Same reason as [attachToBubbleSession]: hiding the control leaves
+        // the transcript box as the only focusable view, and a focused box is
+        // one `renderPreview` refuses to write to.
+        parkFocusOffTheTranscript()
+        retranscribeButton.visibility = View.VISIBLE
+        retranscribeButton.isEnabled = false
+        statusText.text = getString(R.string.history_saved)
+        historyWorker.execute {
+            // 🔴 Was `recent(Int.MAX_VALUE).firstOrNull { it.id == id }`, under a
+            // comment explaining that the store offered no lookup by id and that
+            // adding one belonged to the storage layer rather than to the PR
+            // consuming it. That reasoning held until the storage layer WAS the
+            // thing being changed. `DictationHistoryStore.item` now exists and
+            // this is its caller. "Bounded by MAX_ITEMS" was true and still meant
+            // a 1000-entry sort plus one stat per entry to find a single row.
+            val item = runCatching { historyStore().item(id) }.getOrNull()
+            // 🔴 The read is asynchronous, so the card can have been
+            // RE-PURPOSED before it lands — the bubble starts a new dictation
+            // and `attachToBubbleSession` runs while this is still on the
+            // worker. Writing then replaces a LIVE dictation's transcript
+            // with a stored one, and does it *after* the live text arrived,
+            // so the box ends up showing the old recording with no error
+            // anywhere. Same generation gate, same reason, as
+            // [SessionCallbacks.stale] — which this path had never been given
+            // because the card used to mask it: hiding `micButton` dumped
+            // focus on the transcript box, and `renderPreview` silently
+            // refuses to write to a focused box. Parking focus properly is
+            // what made this observable.
+            runOnUiThread { if (generation == cardGeneration) renderHistoryItem(item) }
+        }
+    }
+
+    private fun renderHistoryItem(item: DictationHistoryStore.Item?) {
+        historyItem = item
+        if (item == null) {
+            // Not an error state: retention is allowed to remove things, and
+            // the chip the user tapped may have been evicted or cleared since
+            // the row was drawn.
+            statusText.text = getString(R.string.history_missing)
+            retranscribeButton.isEnabled = false
+            // The entry is gone, so there is no audio to hand out either.
+            saveAudioButton.isEnabled = false
+            return
+        }
+        finalText.setLength(0)
+        finalText.append(item.text)
+        lastPartial = ""
+        renderPreview()
+        showEngine(item.fromRemote)
+        statusText.text = getString(R.string.history_saved)
+        retranscribeButton.isEnabled = true
+        // A history card always has an entry behind it, so Save audio is
+        // available here for the same reason Re-transcribe is.
+        saveAudioButton.isEnabled = true
+    }
+
+    /**
+     * Sends a stored recording to the service again.
+     *
+     * 🔴 Through [RemoteTranscriber], which structurally **cannot** open a
+     * microphone: it holds no `MicCapture`, no `SpeechHelper` and no
+     * [MicrophoneOwner] token, and it does not delete the file it is handed —
+     * that file is the user's data. The near-miss design (a `DictationSession`
+     * with `start()` skipped) would delete it in `destroy()`.
+     *
+     * 🔴 The result's status line is whatever [RemoteTranscriber] hands back,
+     * which it derives with `statusLabel(truncated, unreliable)`. **No second
+     * derivation here.** That predicate decides when the server's own
+     * "possibly fabricated" / "cut off" verdicts are surfaced, and a copy of
+     * it at this call site is a copy that can disagree — including by
+     * reassuring the user on a `null`, which means the server could not check
+     * at all.
+     *
+     * The button disables itself for the duration. Nothing serialises two
+     * re-transcribes (a fresh `SingleFlightUploader` per call means two
+     * genuinely concurrent uploads), and this is the accepted mitigation: a
+     * UI guard, device-verified, rather than an architectural one.
+     */
+    /**
+     * Arms *Retry* and *Save audio* against the recording just filed under
+     * [id].
+     *
+     * 🔴 Loads the item and reuses [historyItem] rather than introducing a
+     * second "which audio does this card act on?" field. [retranscribe] already
+     * reads exactly that field, so a live card and a history card reach the
+     * same code by having the same state — rather than by two code paths that
+     * can drift. The live card's [historyItem] is simply populated later.
+     *
+     * 🔴 Generation-checked on BOTH sides of the worker hop. The store read is
+     * file IO, and the card can be re-purposed while it is in flight — which is
+     * the exact shape of the F2 defect recorded above [attachToBubbleSession]:
+     * *Re-transcribe* visible and enabled against the PREVIOUS recording.
+     */
+    private fun armAudioActions(id: String) {
+        val generation = cardGeneration
+        historyWorker.execute {
+            val item = runCatching { historyStore().item(id) }.getOrNull()
+                ?: return@execute
+            runOnUiThread {
+                if (cardGeneration != generation) return@runOnUiThread
+                historyItem = item
+                retranscribeButton.visibility = View.VISIBLE
+                retranscribeButton.isEnabled = true
+                saveAudioButton.isEnabled = true
+            }
+        }
+    }
+
+    /**
+     * Hands the stored recording to the share sheet.
+     *
+     * 🔴 Audio only — no transcript text. The operator chose that explicitly:
+     * the recording is the irreplaceable half, and attaching the transcript
+     * would put the dictation's CONTENT into the share preview of every target
+     * in the chooser, which is a disclosure the button does not advertise.
+     */
+    private fun saveAudio() {
+        val item = historyItem ?: run {
+            statusText.text = getString(R.string.save_audio_unavailable)
+            return
+        }
+        historyWorker.execute {
+            val audio = runCatching { historyStore().audioFor(item.id) }.getOrNull()
+            runOnUiThread {
+                if (audio == null) {
+                    statusText.text = getString(R.string.save_audio_missing)
+                    saveAudioButton.isEnabled = false
+                    return@runOnUiThread
+                }
+                // 🔴 A COPY, not the stored file. The provider must not be
+                // able to reach the dictation archive — see ShareStage.
+                val uri = runCatching { ShareStage.stage(this, audio) }.getOrNull()
+                if (uri == null) {
+                    statusText.text = getString(R.string.save_audio_missing)
+                    return@runOnUiThread
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    // From the BYTES: the capture is always named .ogg even
+                    // when the encoder produced MP4.
+                    type = ShareStage.mimeOf(audio)
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    // 🔴 Without this the receiver gets a SecurityException —
+                    // grantUriPermissions in the manifest only makes the flag
+                    // meaningful, it does not imply it.
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching {
+                    startActivity(
+                        Intent.createChooser(send, getString(R.string.save_audio_via))
+                    )
+                }.onFailure {
+                    statusText.text = getString(R.string.save_audio_no_target)
+                }
+            }
+        }
+    }
+
+    private fun retranscribe() {
+        val item = historyItem ?: return
+        val config = settings
+        if (config == null) {
+            statusText.text = getString(R.string.stt_not_configured)
+            return
+        }
+        retranscribeButton.isEnabled = false
+        statusText.text = getString(R.string.stt_uploading)
+        historyWorker.execute {
+            val audio = runCatching { historyStore().audioFor(item.id) }.getOrNull()
+            if (audio == null) {
+                runOnUiThread {
+                    statusText.text = getString(R.string.history_audio_missing)
+                    retranscribeButton.isEnabled = false
+                }
+                return@execute
+            }
+            runCatching {
+                RemoteTranscriber(this, config).transcribe(
+                    audio = audio,
+                    audioSeconds = item.audioSeconds,
+                    // The stored transcript IS the local fallback: if the
+                    // server cannot be reached, what the user already had is
+                    // the best text available, and blanking the box would be
+                    // a re-transcribe that destroyed the transcript it was
+                    // asked to improve.
+                    localTranscript = { item.text },
+                    events = historyEvents(item.id),
+                )
+            }
+            runOnUiThread { retranscribeButton.isEnabled = true }
+        }
+    }
+
+    /**
+     * [RemoteTranscriber.Events] bound to this card.
+     *
+     * Delivered on [historyWorker] — the transcriber documents that events
+     * arrive on the caller's thread — so every view touch marshals, and the
+     * store write deliberately does **not**: it is file IO and belongs off the
+     * main thread.
+     */
+    private fun historyEvents(id: String): RemoteTranscriber.Events =
+        object : RemoteTranscriber.Events {
+            override fun onStatus(text: String) {
+                runOnUiThread { statusText.text = text }
+            }
+
+            override fun onRemoteTranscript(text: String, status: String) {
+                // Persisted so the chip label and a later re-open show the
+                // text the user actually ended up with, rather than the first
+                // guess this re-transcribe was run to replace.
+                runCatching { historyStore().updateText(id, text, fromRemote = true) }
+                runOnUiThread {
+                    haveRemoteTranscript = true
+                    finalText.setLength(0)
+                    finalText.append(text.trim())
+                    lastPartial = ""
+                    renderPreview()
+                    showEngine(fromRemote = true)
+                    statusText.text = status
+                }
+            }
+
+            override fun onFellBack(status: String, localTranscript: String) {
+                runOnUiThread {
+                    statusText.text = status
+                    if (localTranscript.isNotBlank()) {
+                        finalText.setLength(0)
+                        finalText.append(localTranscript.trim())
+                        lastPartial = ""
+                        renderPreview()
+                        showEngine(fromRemote = false)
+                    }
+                }
+            }
+        }
+
+    /**
+     * The store, built on demand.
+     *
+     * Not a field initialised in `onCreate`: the constructor resolves
+     * `noBackupFilesDir`, and every caller here is already on
+     * [historyWorker], so there is nothing to gain by moving that to the main
+     * thread and one more thing to tear down.
+     */
+    private fun historyStore(): DictationHistoryStore = DictationHistoryStore(this)
+
+    override fun onDestroy() {
+        busSink?.let { BubbleSessionBus.detach(it) }
+        busSink = null
+        // Before speech: the session owns the microphone and the recogniser's
+        // pipe, and closing the pipe's write end is what ends the recognition
+        // session. Tearing the recogniser down first leaves a writer with
+        // nowhere to write.
+        session?.destroy()
+        session = null
+        // Releases the microphone if the phone-only recogniser held it: a card
+        // torn down mid-dictation must not leave ownership stranded, or every
+        // later recording in the process is refused.
+        destroyPhoneRecogniser()
+        captureWorker?.shutdown()
+        captureWorker = null
+        // shutdownNow: a re-transcribe in flight is sleeping between retries,
+        // and the card it would render into is going away. The executor is
+        // non-daemon, so leaving it running leaks a thread per card.
+        runCatching { historyWorker.shutdownNow() }
+        // 🔴 Release BOTH holds, unconditionally.
+        //
+        // [onStop] has already released CARD on every ordinary path, and
+        // releasing it again is a no-op — holder membership is idempotent,
+        // which is the reason [OverlayVisibility] keeps a set rather than a
+        // depth counter. CAPTURE is the one that matters here, and is why
+        // this line predates the card's own hold: a card torn down
+        // mid-capture would otherwise leave the bubble off screen with
+        // nothing left alive to put it back.
+        OverlayVisibility.setHidden(OverlayVisibility.Holder.CAPTURE, false)
+        OverlayVisibility.setHidden(OverlayVisibility.Holder.CARD, false)
+        super.onDestroy()
+    }
+
+    // --- the mic control's two roles ----------------------------------------
+
+    /**
+     * Takes the three assignments `@id/mic_button` is allowed and puts each in
+     * exactly one place, so "is there a START control on this card?" is a
+     * question about THREE functions rather than about eleven call sites.
+     *
+     * 🔴 There is deliberately no `showStartControl()`. The operator's
+     * instruction is that the only way to begin a recording is the floating
+     * bubble; the overlay is what opens *after* one. Every state that used to
+     * read "Speak" — the finished transcript, the attached upload, a refused
+     * start, a stopped recogniser, the at-rest card — now hides the control
+     * instead, and `R.string.start_dictation` was deleted so a new site cannot
+     * quietly reintroduce the role by spelling it.
+     *
+     * The guard that keeps this honest is
+     * `OverlayNeverStartsARecordingTest`: it drives every reachable card
+     * state and asserts the control is either GONE or carrying one of the two
+     * labels below — a STATE assertion, so a reworded button cannot walk it.
+     */
+    private fun hideMicControl() {
+        micButton.visibility = View.GONE
+    }
+
+    /** Role 1: end a capture that is ALREADY running. */
+    private fun showStopControl() {
+        micButton.text = getString(R.string.stop_dictation)
+        micButton.visibility = View.VISIBLE
+    }
+
+    /**
+     * Role 2: the mic-denied fallback.
+     *
+     * Not a start control: it opens no microphone of ours, it hands the
+     * utterance to the system voice-typing UI (which needs no `RECORD_AUDIO`
+     * from this app). [BubbleService] documents that this activity is the only
+     * place the app can call `requestPermissions` from, so this is the only
+     * place the copy can live, and the bubble's tap falls back here on purpose.
+     */
+    private fun showSystemVoiceFallback() {
+        micButton.text = getString(R.string.use_system_voice_typing)
+        micButton.visibility = View.VISIBLE
+    }
+
+    /**
+     * Parks focus on the card root, off `@id/dictated_text`.
+     *
+     * 🔴 `renderPreview` refuses to overwrite a FOCUSED transcript box, so a
+     * box holding focus silently swallows an incoming transcript. The card
+     * root is `focusableInTouchMode` for exactly this: it is a focus target
+     * that is always present, unlike `@id/mic_button`, which this change makes
+     * absent in every state the park is needed in. `clearFocus()` alone does
+     * not work — the box simply takes it back as the only candidate.
+     */
+    private fun parkFocusOffTheTranscript() {
+        findViewById<View>(R.id.dictate_card).requestFocus()
+    }
+
+    // --- dictation ----------------------------------------------------------
+
+    private fun hasMicPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        if (requestCode == REQ_MIC) {
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            ) {
+                startDictation()
+            } else {
+                // Fallback: system voice-typing UI needs no RECORD_AUDIO from us.
+                statusText.text = getString(R.string.mic_denied_fallback)
+                showSystemVoiceFallback()
+            }
+        }
+    }
+
+    /**
+     * Stops any capture this card owns — the upload session and the phone
+     * recogniser — and retires the stop control with it.
+     *
+     * One rule, one place: both callers need "the microphone must not still
+     * be open after this", and a second open-coded copy is how the two drift.
+     * `stop()` rather than `discard()`: a finalised recording is uploaded, an
+     * abandoned one is lost.
+     */
+    private fun stopAnyLiveCapture() {
+        session?.takeIf { it.isRecording }?.let {
+            it.stop()
+            hideMicControl()
+        }
+        speech?.takeIf { it.isListening }?.let {
+            stopPhoneRecogniser()
+            hideMicControl()
+        }
+    }
+
+    /**
+     * The control's one listener — and, since the start role was removed, a
+     * function with **no branch that opens a capture of ours**.
+     *
+     * 🔴 The final arm used to be `startDictation()`, reached whenever nothing
+     * was recording and the mic was granted. That is the start role, and
+     * hiding the button is not enough to retire it: the fallback role leaves a
+     * *visible* control on screen, and a user who grants the permission from
+     * Settings and comes back would have found that same control starting a
+     * recording from the overlay. So the branch is deleted rather than
+     * hidden — the only non-stop thing this button can now do is hand over to
+     * the system voice-typing UI, which opens no microphone of ours.
+     *
+     * [startDictation] itself is untouched and still reachable from
+     * [applyLaunchIntent] and [onRequestPermissionsResult]: the notification,
+     * MainActivity and the permission grant all auto-start a recording on open,
+     * and those are the recordings the STOP role exists for. (The Quick
+     * Settings tile was the fourth name in that list; it is the bubble's toggle
+     * now and reaches this method by no route.)
+     */
+    private fun toggleDictation() {
+        session?.takeIf { it.isRecording }?.let {
+            it.stop()
+            hideMicControl()
+            return
+        }
+        val helper = speech
+        if (helper != null && helper.isListening) {
+            stopPhoneRecogniser()
+            hideMicControl()
+            statusText.text = getString(R.string.dictate_hint)
+            return
+        }
+        fallbackSystemVoiceInput()
+    }
+
+    /**
+     * Starts the remote-first session, falling back to the phone-only path
+     * when capture cannot start at all.
+     *
+     * The two paths are kept distinct rather than unified: the remote path
+     * owns the microphone and pipes the recogniser, while the phone-only path
+     * lets the recogniser open the microphone itself. 🔴 Doing both at once is
+     * the one thing that must never happen — Android would hand one of them
+     * exact zeros with no error.
+     */
+    private fun startDictation() {
+        haveRemoteTranscript = false
+        // 🔴 The path this method has to refuse: the bubble is RECORDING and a
+        // card is opened by a PLAIN overlay intent — one carrying no
+        // EXTRA_ATTACH_SESSION. `singleTop` creates a card, `onCreate` finds
+        // no extra, `hasMicPermission()` is true, and a second capture starts
+        // against a live one. Same for the attached card's own mic button,
+        // which `attachToBubbleSession` leaves fully enabled. Android does not
+        // error on either: it feeds one of the two captures exact zeros.
+        //
+        // 🔴 Stated as a property of the INTENT, because the callers it used
+        // to name have all gone: the QS tile (now the bubble's toggle), then
+        // the notification's Dictate action and the launcher icon's "Try
+        // dictation now" (both deleted). The guard is pinned by
+        // MicrophoneOwnershipTest, which constructs that intent itself and so
+        // does not depend on any surface existing.
+        //
+        // 🔴 ONE check, up front, covering BOTH of this method's two
+        // microphone openers:
+        //
+        //  * `startRemoteSession` → `DictationSession` → `AudioRecord`, which
+        //    `MicrophoneOwner` would refuse on its own; and
+        //  * `startPhoneOnlyDictation` → `SpeechHelper` with no shared source,
+        //    where **SpeechRecognizer opens the microphone itself**. It is
+        //    reached whenever `settings` is unavailable (no AndroidKeyStore) or
+        //    capture failed — i.e. by the error path, which is exactly how a
+        //    guard placed only on the remote branch would be walked around.
+        //
+        // 🔴 That second opener now REGISTERS as well as being checked, with
+        // the activity as the token — see `startPhoneOnlyDictation`. Until it
+        // did, this check was the only thing on that path, and it was one-way:
+        // the card refused when somebody else held the mic, but while the
+        // card's own recogniser was listening `MicrophoneOwner.isHeld` was
+        // FALSE, so the bubble (or the tile, or the notification) opened an
+        // `AudioRecord` straight into a live `SpeechRecognizer` — the exact
+        // double capture, with the exact silent symptom. So the two statements
+        // this comment has to keep apart are: this check stops a capture from
+        // starting HERE, and the acquire below stops one starting ELSEWHERE.
+        // Both directions are needed; neither implies the other.
+        //
+        // Both of this card's tokens are passed, because both are "mine": the
+        // session for the remote path, `this` for the phone-only one. Being
+        // refused by our own recogniser would mean the mic button could never
+        // restart a dictation the card itself owns.
+        //
+        // Deliberately NOT also branched on inside the remote arm. That was the
+        // first version: two guards, each one a complete backstop for the
+        // other, so each killed the other's mutant and NEITHER was pinned by
+        // any test. One rule, one place, one reachable case per branch below.
+        //
+        // Check-then-act, but not a race: this and
+        // `BubbleService.startRecording()` both run on the main thread.
+        if (MicrophoneOwner.isHeldByOtherThan(session, this)) {
+            reportMicBusy()
+            return
+        }
+        val config = settings
+        if (config != null && startRemoteSession(config)) return
+        startPhoneOnlyDictation()
+    }
+
+    /** The one place the "another session holds the mic" refusal is rendered. */
+    private fun reportMicBusy() {
+        statusText.text = getString(R.string.stt_mic_in_use)
+        hideMicControl()
+        levelMeter.visibility = View.INVISIBLE
+    }
+
+    private fun startRemoteSession(config: SttSettings): Boolean {
+        // 🔴 The previous session is destroyed only once the NEW one is
+        // recording. `destroy()` deletes the audio file and silences the
+        // callbacks, so destroying it before knowing the replacement can start
+        // threw away a transcript the user was waiting for: on a failed
+        // `start()` this method returns false, `startDictation` falls through
+        // to the phone-only recogniser, and the in-flight upload of the
+        // previous recording is gone — unrecoverably, the bytes with it.
+        //
+        // There is no acquire race in this order. `MicrophoneOwner.release` is
+        // owner-scoped (a `compareAndSet(owner, null)`), so the old session's
+        // late `destroy()` cannot take the mic away from the new one, and the
+        // old session holds nothing anyway by the time we get here: `stop()`
+        // releases as its first statement, and a session that never started
+        // either never took the mic (a refused acquire) or released what it
+        // took (a capture failure). (The previous rationale here claimed the
+        // opposite and was the reason the destroy was moved up; it was unsound.)
+        val previous = session
+        val started = DictationSession(
+            context = this,
+            settings = config,
+            callbacks = uiCallbacks(),
+        )
+        return if (started.start()) {
+            previous?.destroy()
+            session = started
+            showStopControl()
+            levelMeter.visibility = View.VISIBLE
+            true
+        } else {
+            started.destroy()
+            false
+        }
+    }
+
+    /**
+     * The original behaviour: the phone's recogniser, opening its own mic.
+     *
+     * 🔴 Registers with [MicrophoneOwner] for the duration, with the activity
+     * as the token. `SpeechRecognizer` is a microphone client like any other —
+     * it just is not one this process can see — so while it listens, ownership
+     * has to read as taken or a `DictationSession` started from the bubble or
+     * the notification opens an `AudioRecord` against it. Android does not
+     * refuse that: it feeds one of the two bit-exact zeros, and the user sees
+     * an empty or invented transcript. (The QS tile was named here as a third
+     * opener; it opens no dictation now.)
+     */
+    private fun startPhoneOnlyDictation() {
+        val helper = SpeechHelper(this, object : SpeechHelper.Listener {
+            override fun onReady() {
+                statusText.text = getString(R.string.listening)
+            }
+
+            override fun onPartial(text: String) {
+                lastPartial = text
+                renderPreview()
+            }
+
+            override fun onFinal(text: String) {
+                // The recogniser closed the microphone on its own; ownership
+                // must end with it, not with the activity.
+                releasePhoneMic()
+                appendFinal(text)
+                showEngine(fromRemote = false)
+                hideMicControl()
+                statusText.text = getString(R.string.dictate_hint)
+            }
+
+            override fun onError(message: String) {
+                releasePhoneMic()
+                lastPartial = ""
+                renderPreview()
+                hideMicControl()
+                statusText.text = message
+            }
+        }, language = dictationLocaleTag())
+        if (!helper.isAvailable) {
+            // Nothing was opened, so nothing is acquired here: the acquire
+            // belongs to the line that actually starts listening, below.
+            statusText.text = getString(R.string.no_recognizer)
+            return
+        }
+        // 🔴 Before the acquire, not after: `destroyPhoneRecogniser()` calls
+        // `releasePhoneMic()` **unconditionally**, and that release is scoped to
+        // the activity's own token — the same token the acquire below takes. So
+        // reversed, the teardown would release the token the acquire had just
+        // taken, and `helper.start()` would leave the recogniser **listening
+        // while MicrophoneOwner says the mic is free** — which lets a
+        // concurrent DictationSession open a second capture, and Android
+        // answers two captures by feeding one of them exact zeros.
+        //
+        // 🔴 MEASURED, not reasoned: mutant M20 reverses exactly these two
+        // statements and `MicOpenerSeamTest`
+        // .aPhoneOnlyDictationHoldsTheMicrophoneSoAConcurrentSessionIsRefused
+        // goes red — its positive control still shows the recogniser listening,
+        // and the intruder session's `start()` then *succeeds*. That is this
+        // hazard, observed.
+        //
+        // ⚠ An audit asked for this comment to be rewritten on the grounds that
+        // the hazard "was the behaviour of the re-entrant `acquire` that
+        // 60a363c removed", and that reversed the order would instead refuse
+        // itself (`holder === this` ⇒ `compareAndSet` false ⇒ `reportMicBusy`).
+        // **That is wrong and the rewrite was reverted.** The mechanism named
+        // here is release-on-teardown, not re-entrancy, and it needs none: on a
+        // start with no previous recogniser the holder is `null`, so the
+        // reversed acquire succeeds on a plain compare-and-set and the teardown
+        // then frees it. The self-refusal the audit describes is a real but
+        // *second* consequence, reachable only when a previous recogniser is
+        // still live; it is not what the suite catches, and it is not why the
+        // order is this way round.
+        destroyPhoneRecogniser()
+        if (!MicrophoneOwner.acquire(this)) {
+            // Only reachable if something took the mic between
+            // `startDictation`'s check and here. Same refusal, one renderer.
+            reportMicBusy()
+            return
+        }
+        speech = helper
+        helper.start()
+        showStopControl()
+    }
+
+    /**
+     * Gives the microphone back if this card's phone-only recogniser holds it.
+     *
+     * The one place the phone-only release is spelled. Owner-scoped, so it is a
+     * no-op when the holder is the card's [DictationSession] or the bubble's —
+     * which is what makes it safe to call from every teardown route rather than
+     * only from the ones that can prove the recogniser was listening.
+     */
+    private fun releasePhoneMic() {
+        MicrophoneOwner.release(this)
+    }
+
+    /** Stops the phone-only recogniser, keeping its final result. */
+    private fun stopPhoneRecogniser() {
+        speech?.stop()
+        releasePhoneMic()
+    }
+
+    /** Tears the phone-only recogniser down, abandoning any result. */
+    private fun destroyPhoneRecogniser() {
+        speech?.destroy()
+        speech = null
+        releasePhoneMic()
+    }
+
+    /**
+     * The one construction site for the view-binding callbacks — the real
+     * session at [startRemoteSession] and `OverlayMinimalLayoutTest` both go
+     * through here.
+     *
+     * That shared route is the point. The status strip's level meter and engine
+     * badge are only reachable through these callbacks, so a test that built its
+     * own stand-in would be asserting against a fixture rather than against the
+     * object the activity actually hands to [DictationSession] — and would stay
+     * green if this method started returning something else. [SessionCallbacks]
+     * holds no state of its own (it writes the activity's views), so a fresh
+     * instance behaves identically to the session's.
+     *
+     * Deliberately NOT annotated `@VisibleForTesting`: that annotation lives in
+     * androidx.annotation, and this module ships no androidx at runtime on
+     * purpose (see the long note in app/build.gradle.kts, and the dex scan that
+     * checks it rather than asserting it). `internal` plus this comment is the
+     * whole visibility contract.
+     */
+    internal fun uiCallbacks(): DictationSession.Callbacks = SessionCallbacks()
+
+    /** Bridges [DictationSession] to the card's views. */
+    private inner class SessionCallbacks : DictationSession.Callbacks {
+
+        /** The card revision this instance was built for. See [stale]. */
+        private val bornAt = cardGeneration
+
+        /**
+         * Whether this callbacks object was built before the last history
+         * switch.
+         *
+         * ⚠ Deliberately narrow wording. An earlier draft said it answers
+         * "did this callback come from the session the card abandoned?" — it
+         * does not: the card can abandon a session without a history switch
+         * (the mic button on an attached card), and no bump happens there.
+         *
+         * **Six call sites, one predicate** — written out in each override
+         * because the interface offers no single choke point.
+         * [SessionCallbacksGateTest] is what keeps the set honest; without a
+         * ledger a seventh method would be ungated silently, which round 3 of
+         * #17 demonstrated by deleting the gate from `onClientSilenced` and
+         * watching all 568 tests stay green.
+         *
+         * 🔴 Keyed to a GENERATION, not to "is this a history card". Round 2
+         * of #17 used the latter and round 3 measured the cost: attach →
+         * history → start another bubble dictation left the card muted **for
+         * the rest of its life**, because the attach intent carries no
+         * history id, `onNewIntent` returns early by design, and nothing ever
+         * cleared the flag. `micButton` is GONE on a history card, so the
+         * only recovery was closing it.
+         *
+         * A generation cannot wedge that way: [attachToBubbleSession] and
+         * [startDictation] build a NEW callbacks object, which is born
+         * current by construction — and [onNewIntent] re-runs the attach arm
+         * precisely so that a bus-attached card DOES get a fresh sink.
+         *
+         * ⚠ **Not the same coverage as `BubbleService.generation`**, though
+         * it is the same mechanism. That one bumps on EVERY recording, so it
+         * drops any dead session's late transcript; this one bumps only on a
+         * history switch, so a local session abandoned some other way is not
+         * dropped by it. Round 4 of `#17` flagged the earlier wording here
+         * for implying parity there is none.
+         */
+        private fun stale(): Boolean = bornAt != cardGeneration
+
+        override fun onTranscript(text: String, fromRemote: Boolean, isFinal: Boolean) {
+            if (stale()) return
+            // 🔴 The remote transcript wins, and keeps winning: the phone's
+            // final result can arrive after it, and overwriting the server's
+            // text with the phone's would silently downgrade the result.
+            if (haveRemoteTranscript && !fromRemote) return
+            if (fromRemote) haveRemoteTranscript = true
+
+            if (isFinal) {
+                finalText.setLength(0)
+                finalText.append(text.trim())
+                lastPartial = ""
+            } else {
+                lastPartial = text
+            }
+            renderPreview()
+            showEngine(fromRemote)
+        }
+
+        override fun onStatus(text: String) {
+            if (stale()) return
+            statusText.text = text
+        }
+
+        override fun onLevel(level: Double) {
+            if (stale()) return
+            levelMeter.progress = (level * 100).toInt().coerceIn(0, 100)
+        }
+
+        override fun onTier(tier: AudioCaptureLogic.Tier) {
+            if (stale()) return
+            // The meter matters most in the remote-only tiers, where no
+            // partial text ever appears.
+            levelMeter.visibility = View.VISIBLE
+        }
+
+        override fun onClientSilenced(silenced: Boolean) {
+            if (stale()) return
+            // Surfaced as a real state rather than logged: the user can act
+            // on "another app has the microphone", and cannot act on a dead
+            // level meter.
+            levelMeter.visibility = if (silenced) View.INVISIBLE else View.VISIBLE
+        }
+
+        override fun onRecordingStopped() {
+            if (stale()) return
+            hideMicControl()
+            levelMeter.progress = 0
+        }
+
+        /**
+         * The seventh gated method. 🔴 The [stale] gate is not optional here:
+         * an abandoned session's id would arm *Retry* and *Save audio* against
+         * the PREVIOUS recording's audio while the current recording's
+         * transcript is on screen — the user would press Retry and watch the
+         * text be replaced by a re-transcription of something else.
+         */
+        override fun onHistorySaved(id: String) {
+            if (stale()) return
+            armAudioActions(id)
+        }
+    }
+
+    /**
+     * Names the engine behind the text currently in the box.
+     *
+     * 🔴 **Deliberately flag-blind, and this is not the second copy of
+     * [RemoteTranscriber.statusLabel]'s predicate it resembles.** The badge
+     * answers one question — *which engine produced this text* — and no value
+     * of `truncated` or `unreliable` changes that answer. The caveats go on
+     * the status line, which is a full-width sentence; this is an 11sp pill
+     * that cannot carry one, and duplicating the warning in two places on one
+     * screen would make both easier to ignore.
+     *
+     * 🔴 **It no longer SHARES `stt_remote_done` with the status line — that
+     * sharing was the duplicate the operator reported.** After a plain remote
+     * transcription both surfaces resolved to "Transcribed by the server", so
+     * the card said it twice: once in the pill, once in the full-width line
+     * directly beneath it.
+     *
+     * The sentence stays on the **status line**, and the badge gets its own
+     * short engine names. The status line is the surface that carries
+     * [RemoteTranscriber.statusLabel]'s `truncated` / `unreliable` variants,
+     * and those cannot move here (see the paragraph above), so collapsing the
+     * duplicate in the other direction would have meant either silencing the
+     * warnings or splitting them across two surfaces. This way every status
+     * string is untouched and exactly one of them is on screen.
+     *
+     * The previous kdoc argued the shared string was safe because
+     * `RemoteTranscriberTest.theRemoteDoneStatusMakesNoVerificationClaim`
+     * pins it whole. That is still true and still the reason the status line
+     * may carry it — it is simply no longer a claim about the badge.
+     * `OverlayMinimalLayoutTest` pins the badge from both sides now: it is
+     * never either warning string, and it never equals the status line.
+     */
+    private fun showEngine(fromRemote: Boolean) {
+        engineBadge.visibility = View.VISIBLE
+        engineBadge.text = getString(
+            if (fromRemote) R.string.engine_badge_remote else R.string.engine_badge_local
+        )
+    }
+
+    private fun appendFinal(text: String) {
+        if (finalText.isNotEmpty()) finalText.append(" ")
+        finalText.append(text.trim())
+        lastPartial = ""
+        renderPreview()
+    }
+
+    private fun renderPreview() {
+        val preview = buildString {
+            append(finalText)
+            if (lastPartial.isNotBlank()) {
+                if (isNotEmpty()) append(" ")
+                append(lastPartial)
+            }
+        }
+        // Don't clobber the cursor while the user is editing manually.
+        if (!textInput.hasFocus()) {
+            textInput.setText(preview)
+            textInput.setSelection(preview.length)
+        } else if (textInput.text.toString() != preview && lastPartial.isNotBlank()) {
+            textInput.setText(preview)
+            textInput.setSelection(preview.length)
+        }
+    }
+
+    /**
+     * The dictation language for this Activity's own capture paths.
+     *
+     * 🔴 [settings] is nullable because `SttSettings.create` is allowed to
+     * fail when there is no AndroidKeyStore. When it is null there is no
+     * stored preference to honour, so this follows the device — which is what
+     * the recogniser did unconditionally before, now stated out loud at the
+     * one place that can still mean it.
+     */
+    private fun dictationLocaleTag(): String {
+        val locale = Locale.getDefault()
+        return settings?.dictationLocaleTag(locale) ?: locale.toLanguageTag()
+    }
+
+    /** Permission-free fallback: delegate capture to the system voice UI. */
+    private fun fallbackSystemVoiceInput() {
+        val intent = RecognizerIntents.systemVoiceUiIntent(
+            language = dictationLocaleTag(),
+            prompt = getString(R.string.speak_now),
+        )
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQ_VOICE_FALLBACK)
+        } catch (_: ActivityNotFoundException) {
+            statusText.text = getString(R.string.no_voice_input)
+        }
+    }
+
+    @Deprecated("PoC keeps the classic API to avoid an AndroidX dependency")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_VOICE_FALLBACK && resultCode == RESULT_OK) {
+            val text = data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!text.isNullOrBlank()) appendFinal(text)
+            return
+        }
+        if (requestCode == REQ_PROJECTION) {
+            if (resultCode == RESULT_OK && data != null) {
+                runScreenshotSequence(resultCode, data)
+            } else {
+                statusText.text = getString(R.string.screenshot_consent_declined)
+            }
+        }
+    }
+
+    // --- screenshot ---------------------------------------------------------
+
+    /**
+     * Mid-dictation behaviour, decided deliberately: tapping Screenshot **stops
+     * the recogniser first** and keeps whatever has been transcribed so far.
+     *
+     * The alternative — leave the mic running — does not work: the consent
+     * dialog takes window focus, and both the system consent UI and the capture
+     * flow move Dicta out of the top-app state that wins microphone
+     * arbitration, so the recogniser would error out mid-utterance and lose the
+     * partial anyway. Stopping explicitly means the partial is committed to the
+     * text box instead of being dropped.
+     *
+     * ⚠ This used to end "the user can tap the mic again after the capture."
+     * They cannot, and must not: the stop control goes away with the capture
+     * and the card offers no way to start another. The next recording begins
+     * at the bubble.
+     */
+    private fun requestScreenshot() {
+        // Same reasoning as the recogniser below, and for the same reason it
+        // applies to the capture session too: the consent dialog takes window
+        // focus and moves Dicta out of the top-app state that wins microphone
+        // arbitration, so the capture would be fed silence mid-utterance.
+        // Stopping explicitly means the recording is finalised and uploaded
+        // rather than abandoned.
+        stopAnyLiveCapture()
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        if (mpm == null) {
+            statusText.text = getString(R.string.screenshot_unsupported)
+            return
+        }
+        // Per-session consent. On Android 14+ this CANNOT be made permanent —
+        // the prompt is expected on every capture, and the UI does not pretend
+        // otherwise.
+        statusText.text = getString(R.string.screenshot_requesting)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(screenCaptureIntent(mpm), REQ_PROJECTION)
+        } catch (_: ActivityNotFoundException) {
+            statusText.text = getString(R.string.screenshot_unsupported)
+        }
+    }
+
+    /**
+     * The consent intent, pinned to **whole-display** capture where the
+     * platform allows it.
+     *
+     * Android 14 (API 34) added a scope chooser to the system consent dialog
+     * with *A single app* as the **default**. Dicta's feature is "capture what
+     * is behind this card", and [ProjectionService] sizes its VirtualDisplay
+     * from the real display metrics — a single-app projection is neither what
+     * the user asked for nor what the mirror is sized for (it arrives scaled
+     * and letterboxed inside a full-screen surface, with the rest blank).
+     *
+     * `MediaProjectionConfig.createConfigForDefaultDisplay()` tells the
+     * framework this app only ever wants the default display, which removes the
+     * single-app option from the dialog. Measured on Android 15 / SM-G991W: the
+     * scope spinner is gone and the dialog reads "Entire screen" only.
+     *
+     * Below API 34 there is no chooser at all — the one-argument overload
+     * always means the whole display — so the fallback is not a degradation.
+     */
+    private fun screenCaptureIntent(mpm: MediaProjectionManager): Intent =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            mpm.createScreenCaptureIntent(
+                android.media.projection.MediaProjectionConfig
+                    .createConfigForDefaultDisplay()
+            )
+        } else {
+            mpm.createScreenCaptureIntent()
+        }
+
+    private fun runScreenshotSequence(resultCode: Int, data: Intent) {
+        val worker = captureWorker
+            ?: Executors.newSingleThreadExecutor().also { captureWorker = it }
+        val main = Executor { command -> runOnUiThread(command) }
+
+        ScreenshotSequencer(
+            ui = DictaWindows(window, DIM_AMOUNT),
+            settler = ChoreographerFrameSettler(),
+            worker = worker,
+            main = main,
+            capture = { captureViaService(resultCode, data) },
+            onDone = { result -> onScreenshotDone(result) },
+        ).start()
+    }
+
+    /**
+     * Blocks on the [ProjectionService] round trip. Runs on the capture worker,
+     * never the main thread.
+     */
+    private fun captureViaService(resultCode: Int, data: Intent): Uri {
+        val latch = CountDownLatch(1)
+        val outcome = java.util.concurrent.atomic.AtomicReference<Result<Uri>>()
+        ProjectionRequests.submit(
+            ProjectionRequests.Request(resultCode, data) { result ->
+                outcome.set(result)
+                latch.countDown()
+            }
+        )
+        ProjectionService.start(this)
+        if (!latch.await(SERVICE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            ProjectionRequests.abort(IllegalStateException("capture timed out"))
+            throw IllegalStateException(
+                "no screenshot after ${SERVICE_TIMEOUT_SECONDS}s"
+            )
+        }
+        return outcome.get().getOrThrow()
+    }
+
+    private fun onScreenshotDone(result: Result<Uri>) {
+        result.fold(
+            onSuccess = { uri ->
+                screenshotUri = uri
+                attachmentNote.visibility = View.VISIBLE
+                statusText.text = getString(R.string.screenshot_ready)
+            },
+            onFailure = { error ->
+                screenshotUri = null
+                attachmentNote.visibility = View.GONE
+                statusText.text = getString(
+                    R.string.screenshot_failed,
+                    error.message ?: error.javaClass.simpleName
+                )
+            }
+        )
+    }
+
+    // --- copy / share -------------------------------------------------------
+
+    private fun currentText(): String = textInput.text.toString().trim()
+
+    private fun copyToClipboard() {
+        val text = currentText()
+        if (text.isEmpty()) {
+            Toast.makeText(this, getString(R.string.nothing_to_copy), Toast.LENGTH_SHORT)
+                .show()
+            return
+        }
+        val cm = getSystemService(ClipboardManager::class.java)
+        cm.setPrimaryClip(ClipData.newPlainText("promptshipper", text))
+        Toast.makeText(this, getString(R.string.copied), Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Send. Refuses only when there is **neither** text nor an attached image.
+     *
+     * An image with an empty text box is a legitimate share — "screenshot this
+     * and send just the screenshot" — and the previous `if (text.isEmpty())
+     * return` made it impossible: the Screenshot button would attach a capture
+     * and Send would then refuse to do anything with it. The empty-handed
+     * refusal still exists, but only for the genuinely-empty case.
+     */
+    private fun shareText() {
+        val text = currentText()
+        val image = screenshotUri
+        if (text.isEmpty() && image == null) {
+            Toast.makeText(this, getString(R.string.nothing_to_share), Toast.LENGTH_SHORT)
+                .show()
+            return
+        }
+        val send = if (image == null) {
+            ShareIntents.textOnly(text)
+        } else {
+            ShareIntents.withImage(
+                contentResolver, text, image, getString(R.string.app_name)
+            )
+        }
+        val title = getString(
+            when {
+                image == null -> R.string.share_via
+                text.isEmpty() -> R.string.share_image_via
+                else -> R.string.share_with_image_via
+            }
+        )
+        startActivity(ShareIntents.chooser(send, title))
+    }
+
+    companion object {
+        private const val REQ_MIC = 1001
+        private const val REQ_VOICE_FALLBACK = 1002
+        private const val REQ_PROJECTION = 1003
+
+        /**
+         * The dim restored after a capture. It MUST equal
+         * `android:backgroundDimAmount` in Theme.Dicta.Overlay: the hide path
+         * clears the dim and the restore path puts it back from this constant,
+         * so if the theme and this number disagree, the card is permanently
+         * mis-dimmed after the first capture.
+         *
+         * That relationship is enforced, not just asserted in prose —
+         * `DictateOverlayThemeTest.theRestoredDimEqualsTheThemeDim` resolves
+         * the theme attribute and compares it to this constant, so a theme-only
+         * edit to 0.5 turns the suite red. `internal` rather than `private` for
+         * exactly that reason.
+         */
+        internal const val DIM_AMOUNT = 0.6f
+
+        /**
+         * Consent is already granted by the time we get here, so this only has
+         * to cover service start + one composited frame.
+         */
+        private const val SERVICE_TIMEOUT_SECONDS = 15L
+    }
+}

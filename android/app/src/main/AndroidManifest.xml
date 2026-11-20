@@ -1,0 +1,500 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 🔴 Added with the remote-STT client. The app had never made a network
+         call before this change, so INTERNET was genuinely absent — and its
+         absence raises no permission dialog and no build warning: every
+         socket simply throws at runtime. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- 🔴 BubbleService records inline (tap the bubble, speak, tap again), so on
+         targetSdk 34 it must hold this as well as declare the microphone FGS
+         type. Neither omission is a build error; the service simply throws out
+         of startForeground the first time the user taps the bubble. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 🔴 Without this the BOOT_COMPLETED receiver below is simply never
+         invoked: the broadcast is not delivered, no exception is raised and no
+         build warning appears, so the only symptom is a bubble that quietly
+         fails to come back after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Package visibility (Android 11+): lets PairingActivity hand the QR scan
+         to a scanner app answering the ZXing SCAN intent. Grants nothing; the
+         scanner app owns the camera, so this app needs no CAMERA permission. -->
+    <queries>
+        <intent>
+            <action android:name="com.google.zxing.client.android.SCAN" />
+        </intent>
+    </queries>
+
+    <!-- icon/roundIcon point at the adaptive icon in mipmap-anydpi-v26, NOT at a
+         bare drawable: a 24dp vector used directly as a launcher icon is drawn
+         unmasked and unpadded, so it rendered small and got square-cropped by
+         the launcher's own icon shapes. roundIcon exists because some launchers
+         (Samsung's included — the target device is a Galaxy S21) still query it,
+         and one that asks and finds nothing drops to the legacy square path. -->
+    <!-- networkSecurityConfig: the servers speak plain HTTP on a private
+         network whose address is only known after pairing, and the platform
+         config cannot express an address RANGE. So cleartext is permitted
+         there and gated in code — PrivateNetwork allows http:// only to a
+         private IP literal and requires https:// everywhere else. See
+         res/xml/network_security_config.xml for the full reasoning. -->
+    <!-- 🔴 allowBackup is FALSE deliberately, and the platform default is true.
+         The dictation history store lands in noBackupFilesDir, so with the
+         default in place up to 2 GiB of the user's recorded VOICE plus every
+         transcript would be eligible for cloud auto-backup and for
+         `adb backup` — a data-egress change with no lint error, no build
+         warning and no runtime symptom. Nothing would ever go red.
+
+         One attribute rather than android:dataExtractionRules, on DRIFT
+         grounds and not capability. dataExtractionRules is API 31+ and needs
+         two rule sets (<cloud-backup> and <device-transfer>), and minSdk here
+         is 26, so devices on 26–30 would additionally need fullBackupContent:
+         three files that must agree with each other AND with the store's
+         directory name. That is exactly the cross-file drift class that
+         produced issue #11. The single attribute covers both transports,
+         every API level, and shared_prefs too.
+
+         Accepted cost, so it is not rediscovered as a bug: on device
+         migration the user loses backup of their base URL and language
+         preference (two fields, under a minute to re-enter). The bearer token
+         has to be re-entered regardless — the AndroidKeyStore key wrapping it
+         is non-exportable, so it could never have been restored anyway.
+
+         Pinned by BackupManifestTest, which also fails if the rule-file
+         attributes appear. -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.Dicta">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Floating dictation overlay: dialog-themed, excluded from recents.
+
+          🔴 taskAffinity is LOAD-BEARING, not tidiness. The "from anywhere"
+          entry points (the bubble and the notification) start this
+          activity with FLAG_ACTIVITY_NEW_TASK, and that flag does NOT mean
+          "make a new task" — it means "use the task matching this activity's
+          taskAffinity, creating one only if none exists". With no affinity
+          declared this activity inherited the application default, which is
+          MainActivity's task: tapping the bubble brought Dicta's own task
+          forward and stacked the overlay on top of MainActivity, so the
+          translucent card rendered over the entire app UI instead of over
+          whatever the user was actually looking at. That was issue #11.
+
+          The value must stay in sync with DictateLaunch.OVERLAY_TASK_AFFINITY;
+          DictateLaunchTest pins the two together, because they live in
+          different files and a drift here silently restores the bug.
+
+          A distinct name rather than "": an empty affinity means "no affinity
+          to anything" and can hand out a fresh task per launch, which fights
+          launchMode="singleTop".
+        -->
+        <activity
+            android:name=".DictateActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dicta.Overlay"
+            android:excludeFromRecents="true"
+            android:taskAffinity="dev.zacx.promptshipper.overlay"
+            android:launchMode="singleTop" />
+
+        <!--
+          The snippet picker (issue #38): search the imported snip catalog and
+          copy a snippet to the clipboard.
+
+          🔴 exported="false", and NO <intent-filter> anywhere in this change.
+          The operator's decision over the issue's share-sheet wording: this is
+          a PUBLIC app, and an exported surface is an entry point any installed
+          app could invoke. The import is an in-app ACTION_OPEN_DOCUMENT from
+          SettingsActivity, which no other app can trigger.
+
+          🔴 taskAffinity is LOAD-BEARING here for exactly DictateActivity's
+          reason above, reached by a new route: the bubble starts this with
+          FLAG_ACTIVITY_NEW_TASK, and that flag means "use the task matching
+          this activity's taskAffinity". With no affinity it would inherit the
+          application default — MainActivity's task — and the translucent
+          picker would render over Dicta's own UI instead of over the app the
+          user is in. That was issue #11.
+
+          The value must stay in sync with SnipLaunch.PICKER_TASK_AFFINITY, and
+          must stay DIFFERENT from DictateActivity's: two floating surfaces
+          sharing one task with singleTop on both would stack, and Back would
+          walk through a surface the user never opened. SnipSeamLedgerTest pins
+          both halves.
+
+          It starts no recording and touches no microphone — see
+          SnipPickerActivity's kdoc and SnipSeamLedgerTest.
+        -->
+        <activity
+            android:name=".SnipPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dicta.Overlay"
+            android:excludeFromRecents="true"
+            android:taskAffinity="dev.zacx.promptshipper.snip"
+            android:launchMode="singleTop" />
+
+        <!--
+          The history picker: search the stored dictations and open one.
+
+          It REPLACED the chip list that used to live inside the bubble's own
+          overlay window. Every attribute below is the snippet picker's, for the
+          reasons written above it, and the two elements are deliberately
+          identical except for the name and the affinity — they are the same
+          KIND of surface and both are FloatingPickerActivity subclasses, so a
+          difference in any of these would be a difference nobody decided on.
+
+          🔴 exported="false" and NO <intent-filter>. Stronger here than for the
+          snippet picker: this activity lists the user's own dictation
+          transcripts, so an exported surface would be a read of their recorded
+          speech that any installed app could invoke. The element being
+          self-closing IS the no-filter claim — a filter would have to be a
+          child, so it could not be.
+
+          🔴 taskAffinity is LOAD-BEARING for DictateActivity's reason (issue
+          #11), and must stay DIFFERENT from BOTH the others. It is the card's
+          partner in a way the snippet picker is not: this picker STARTS the
+          card, so sharing the card's affinity with singleTop on both would
+          stack them and Back from the card would land on the picker rather than
+          on the app the user began in — which is precisely what the shell's
+          finish() exists to prevent. The value must stay in sync with
+          HistoryLaunch.PICKER_TASK_AFFINITY; PickerShellSeamLedgerTest pins
+          that and the all-different property.
+
+          It starts no recording and touches no microphone. The one activity it
+          can start is the card through DictateLaunch.historyIntent, which
+          carries EXTRA_HISTORY_ID — so DictateActivity populates from history
+          rather than capturing. See HistoryLaunch's kdoc and
+          PickerShellSeamLedgerTest.
+        -->
+        <activity
+            android:name=".HistoryPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dicta.Overlay"
+            android:excludeFromRecents="true"
+            android:taskAffinity="dev.zacx.promptshipper.history"
+            android:launchMode="singleTop" />
+
+        <!--
+          The shared-clipboard picker: search what every device has copied and
+          copy one row onto this phone's clipboard.
+
+          Every attribute below is the other two pickers', for the reasons
+          written above them, and the three elements are deliberately identical
+          except for the name and the affinity — they are the same KIND of
+          surface and all three are FloatingPickerActivity subclasses, so a
+          difference in any of these would be a difference nobody decided on.
+
+          🔴 exported="false" and NO <intent-filter>. The element being
+          self-closing IS the no-filter claim — a filter would have to be a
+          child, so it could not be. Stronger here than for the snippet picker
+          and for the same reason as the history one: this activity lists
+          everything the operator has copied on any of their devices, so an
+          exported surface would be a read of that which any installed app
+          could invoke. The capture activity below IS exported, and that is the
+          whole of this feature's third-party surface.
+
+          🔴 taskAffinity is LOAD-BEARING for DictateActivity's reason (issue
+          #11), and must stay DIFFERENT from all three others. The value must
+          stay in sync with ClipLaunch.PICKER_TASK_AFFINITY; ClipSeamLedgerTest
+          pins that and the all-different property.
+
+          It starts no recording, touches no microphone, and starts no activity
+          at all — see ClipPickerActivity's kdoc and ClipSeamLedgerTest.
+        -->
+        <activity
+            android:name=".ClipPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dicta.Overlay"
+            android:excludeFromRecents="true"
+            android:taskAffinity="dev.zacx.promptshipper.clip"
+            android:launchMode="singleTop" />
+
+        <!--
+          🔴 THE APP'S FIRST THIRD-PARTY-REACHABLE ENTRY POINT, other than
+          MAIN/LAUNCHER and the QS tile. Read CaptureActivity's kdoc before
+          touching any attribute here; every one of them is load-bearing and
+          several fail INVISIBLY.
+
+          ONE activity with TWO filters, because the work is byte-identical.
+          android:label on an <intent-filter> overrides the activity's, so the
+          selection-toolbar item and the sharesheet entry still read
+          differently.
+
+          🔴 exported="true" is REQUIRED, not a choice.
+          Editor.isSupportedActivity skips a non-exported out-of-package
+          activity — and skips one whose android:permission the host does not
+          hold, so declaring a permission here would make the item invisible
+          rather than protected. From API 31 the attribute must also be
+          explicit or the app cannot install. The compensating guarantee is
+          structural and is asserted rather than argued:
+          ClipSeamLedgerTest.theCaptureActivityCannotReachTheMicrophoneOrHistory.
+
+          🔴 <data android:mimeType="text/plain"> is REQUIRED on both. The
+          platform calls setType("text/plain"), and a typed intent cannot pass
+          the data test against a filter with no <data> — the item simply never
+          appears, with nothing going red.
+
+          🔴 taskAffinity is a FOURTH distinct value and it is needed even
+          though this activity is noHistory and shows no window: the platform
+          starts it from a foreign process, and an undeclared affinity inherits
+          MainActivity's, which would bring Dicta's whole task forward over the
+          app the user is selecting text in. That is issue #11 by a fifth
+          route. Must stay in sync with CaptureActivity.CAPTURE_TASK_AFFINITY.
+
+          🔴 THE THEME IS TRANSLUCENT, AND IT MUST BE DECLARED — leaving it off
+          was audit round 0's finding #2. With no android:theme this activity
+          inherited <application>'s @style/Theme.Dicta, whose parent is
+          android:Theme.Material.NoActionBar and whose windowBackground is an
+          OPAQUE @color/dicta_surface_0. It calls no setContentView, so picking
+          "Send to Dicta" from the selection overflow made the platform raise a
+          full-screen opaque window with nothing in it over whatever the user
+          was reading, for at least a frame, before finish() in onCreate. §4.2
+          of the design specified "translucent, no setContentView"; only the
+          second half was implemented.
+
+          @android:style/Theme.Translucent.NoTitleBar rather than a style of our
+          own: windowIsTranslucent, a null window background and no title bar
+          are the whole requirement, the platform already composes exactly
+          that, and a Dicta style would be a fourth theme in themes.xml whose
+          only job is to restate it. Nothing here is drawn, so none of
+          Theme.Dicta's colour tokens are reachable from this activity anyway.
+
+          🔴 STILL NOT @style/Theme.Dicta.Overlay — which is the narrow claim
+          this element has to satisfy, and NOT "no theme at all". That theme is
+          what makes a window FLOATING, and it is what
+          FloatingOverlaySeamLedgerTest derives its set of floating surfaces
+          from, so wearing it would put this activity on that ledger and owe it
+          a FloatingWindowSizeTest case for geometry it never has.
+          CaptureManifestTest asserts that narrow claim; it used to assert the
+          WIDER "declares no android:theme= at all", which forbade every theme
+          and so pinned the opaque-window bug in place.
+
+          noHistory + excludeFromRecents: it finishes in onCreate, so it must
+          not be something the user can swipe back to or find in Recents.
+        -->
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="dev.zacx.promptshipper.capture">
+            <intent-filter android:label="@string/capture_verb">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter android:label="@string/capture_verb_share">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Transcription settings: the base URL and the bearer token. Not
+             exported — the token field must not be reachable by another app's
+             intent. -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings_title" />
+
+        <!-- Pairing: not exported, so no other app can start it or hand it a
+             payload. It reads the QR code through a scanner app (the ZXing
+             SCAN intent, declared in <queries> above) or the clipboard. -->
+        <activity
+            android:name=".PairingActivity"
+            android:exported="false"
+            android:label="@string/pairing_title" />
+
+        <!--
+          Quick Settings tile: the floating bubble's on/off switch. It opens
+          nothing and starts no dictation — DictaTileService's kdoc says why.
+
+          🔴 ACTIVE_TILE IS DELIBERATELY ABSENT, and re-adding it without a
+          refresh call site is a correctness bug, not a tuning choice. An
+          ACTIVE_TILE is bound only for onTileAdded/onTileRemoved, for a tap,
+          and otherwise ONLY when the app calls
+          TileService.requestListeningState() — so onStartListening is NOT
+          called when the panel opens. This tile's state is derived
+          (BubbleEnabled.isUp = the stored flag AND the overlay permission),
+          and the permission half can change with NO app code running at all:
+          the user revoking "Display over other apps" in system Settings.
+          Nothing is then in a position to call requestListeningState, so an
+          active tile would paint a reading taken at some arbitrary earlier
+          moment — and because onClick takes its direction from the same
+          predicate, the tap after a stale render does the opposite of the
+          affordance the user just looked at.
+          Standard (non-active) mode binds the service while the panel is
+          visible, so onStartListening re-renders from live state every time
+          the user can see the tile, with zero call sites to keep in sync.
+          TileManifestTest.anActiveTileMustHaveSomethingThatRefreshesIt pins
+          the relationship rather than the absence: declare ACTIVE_TILE again
+          only together with a requestListeningState caller.
+        -->
+        <service
+            android:name=".DictaTileService"
+            android:exported="true"
+            android:label="@string/tile_label"
+            android:icon="@drawable/ic_tile_mic"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <!--
+              This tile is a two-state switch, so it says so. The platform uses
+              this to pick the on/off affordance and the accessibility role it
+              announces, instead of treating the tile as a launcher button.
+              Ignored by releases that predate it, so it is safe at minSdk 26.
+            -->
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+        <!--
+          Floating bubble host, and — since the inline-dictation redesign — the
+          owner of the microphone session.
+
+          🔴 BOTH types are declared, and the service promotes to the SPECIFIC
+          one at runtime: microphone while recording, specialUse at rest. The
+          obvious edit (replace specialUse with microphone) is wrong and is
+          pinned against by MicrophoneFgsManifestTest. Android 14 throws
+          SecurityException out of startForeground when a microphone-typed FGS
+          is promoted without RECORD_AUDIO, and this service MUST keep running
+          when the microphone is denied: that is exactly the state in which a
+          tap falls back to opening DictateActivity, which is the only place an
+          app can call requestPermissions from and the only place the
+          mic-denied fallback copy lives. A microphone-only type would kill the
+          bubble for precisely the users who have not granted the mic.
+
+          specialUse also remains the type the PROPERTY below describes.
+        -->
+        <service
+            android:name=".BubbleService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-toggled floating mic bubble that opens voice dictation from anywhere on the device." />
+        </service>
+
+        <!--
+          MediaProjection host. On Android 14+ a mediaProjection-typed FGS must
+          already be running before MediaProjectionManager.getMediaProjection()
+          is called, so the consent result is handed to this service rather than
+          used in the Activity.
+        -->
+        <service
+            android:name=".ProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!--
+          Restores the bubble after a reboot when the user had it on.
+
+          exported="true" is deliberate and is the documented requirement for a
+          manifest receiver that listens for a system broadcast on Android 12+;
+          BOOT_COMPLETED is a protected action, so only the system can send it.
+          The receiver additionally checks the action itself, because a receiver
+          is reachable by an explicit intent whatever its filter says.
+
+          🔴 The service it starts is specialUse AT REST — BubbleService only
+          promotes to microphone while recording. That distinction is what makes
+          this start legal: a microphone-typed FGS launched from a
+          BOOT_COMPLETED receiver is refused from Android 14 on, and the wider
+          Android 15 list of disallowed types (dataSync, camera, mediaPlayback,
+          phoneCall, mediaProjection, microphone) still does not include
+          specialUse. See BubbleBootReceiver's kdoc for the full argument from
+          the documented rules — it is an argument, NOT a measurement: nothing
+          here or in the unit suite has observed a real device's answer, and the
+          receiver has no fallback if one ever refuses (that kdoc says why a
+          fallback here could not have worked anyway).
+        -->
+        <receiver
+            android:name=".BubbleBootReceiver"
+            android:exported="true"
+            android:directBootAware="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!--
+                  🔴 A SECOND RESTORE PATH, handled identically to the boot one.
+                  An app update stops the service and Android does not restart
+                  one across a package replacement, so the bubble is gone after
+                  every `adb install -r` / Play update while the user's stored
+                  intent still says they want it.
+
+                  🔴 This comment used to say the opposite — "NOT a second
+                  restore path — the receiver CLEARS the flag on this one and
+                  starts nothing". That write was measured on hardware as the
+                  cause of bubble_enabled flipping to false after an upgrade
+                  install, and it is deleted. Restoring the bubble closes the
+                  same "the switch would lie" gap without destroying the one
+                  piece of state only the user may change.
+
+                  🔴 This comment also claimed the action is NOT on Android
+                  12+'s foreground-service-start exemption list, and that the
+                  start was legal only via SYSTEM_ALERT_WINDOW. That is FALSE:
+                  MY_PACKAGE_REPLACED is on that list, in the same documented
+                  bullet as BOOT_COMPLETED and LOCKED_BOOT_COMPLETED, so the
+                  two actions are exempt on identical terms. See
+                  BubbleBootReceiver.onReceive for the correction and for why
+                  the SYSTEM_ALERT_WINDOW route is the one that may NOT apply
+                  here from Android 15 on. No data filter: this action is
+                  delivered only to the replaced package itself.
+                -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Cancels the orphaned trigger notification on the first start of a new
+          build. See TriggerNotificationCleanup's kdoc for the hazard: the
+          deleted notification was setOngoing(true), so it cannot be swiped
+          away and outlives the code that posted it.
+
+          exported="true" for the same documented reason as the boot receiver
+          above — ACTION_MY_PACKAGE_REPLACED is a protected system broadcast —
+          and the receiver checks the action itself regardless of the filter.
+        -->
+        <receiver
+            android:name=".PackageReplacedReceiver"
+            android:exported="true"
+            android:directBootAware="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Serves the captured PNG to the share target. Hand-rolled rather than
+          androidx.core FileProvider so the APK keeps zero runtime
+          dependencies — see DictaFileProvider's kdoc. grantUriPermissions is
+          what makes FLAG_GRANT_READ_URI_PERMISSION on the share intent
+          meaningful; without it the receiver gets a SecurityException.
+        -->
+        <provider
+            android:name=".DictaFileProvider"
+            android:authorities="dev.zacx.promptshipper.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+    </application>
+</manifest>

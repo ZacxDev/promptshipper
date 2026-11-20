@@ -1,0 +1,274 @@
+package dev.zacx.promptshipper
+
+import android.content.Context
+import android.content.SharedPreferences
+import java.util.Locale
+
+/**
+ * Where the bearer token lives.
+ *
+ * The *ciphertext* goes into ordinary [SharedPreferences]; the key that
+ * protects it lives in `AndroidKeyStore` and is not exportable. That is the
+ * same guarantee `EncryptedSharedPreferences` offers, without the AndroidX
+ * runtime dependency — see [KeystoreCipher]'s kdoc.
+ *
+ * 🔴 Two invariants, both load-bearing and both pinned by tests:
+ *
+ *  1. The plaintext token is **never** written to the preferences file under
+ *     any key. The test reads the on-disk XML back and greps it.
+ *  2. A token that cannot be decrypted reads back as null rather than as a
+ *     corrupt string, so the app asks the user to re-enter it instead of
+ *     sending garbage and getting a 401 it cannot explain.
+ */
+class TokenStore(
+    private val prefs: SharedPreferences,
+    private val cipher: SecretCipher,
+    /**
+     * Which preference key this instance owns.
+     *
+     * 🔴 A PARAMETER since the shared clipboard arrived, defaulting to the
+     * transcription token's key so every existing caller is unchanged. The app
+     * now holds TWO independent bearer tokens — see [ClipSettings] — and they
+     * must be separately settable, clearable and rotatable, because they reach
+     * different services with different blast radii.
+     *
+     * One implementation with two instances, deliberately, rather than a second
+     * token class: the two invariants this file is pinned on (the plaintext
+     * never reaches the preferences XML; an undecryptable blob reads back as
+     * null) are ONE rule, and a predicate open-coded at N sites is wrong at
+     * N−1 of them.
+     */
+    private val key: String = KEY_TOKEN_CIPHERTEXT,
+) {
+
+    /**
+     * @return the token, or null when none is stored or it will not decrypt.
+     */
+    fun token(): String? {
+        val blob = prefs.getString(key, null) ?: return null
+        return cipher.decrypt(blob)?.takeIf { it.isNotBlank() }
+    }
+
+    val hasToken: Boolean get() = token() != null
+
+    /**
+     * Whether a ciphertext blob is stored **at all**, whether or not it will
+     * decrypt.
+     *
+     * 🔴 Distinct from [hasToken], and the gap between the two is a real
+     * device state rather than a hypothetical: [KeystoreCipher] fails closed,
+     * so removing the lock screen or restoring onto a new handset invalidates
+     * the key and [token] returns null for a blob that is still sitting in the
+     * preferences. `hasToken` is then false on a phone the operator configured
+     * weeks ago and has been capturing on ever since.
+     *
+     * The consumer is [ClipSettings.tokenIsUnusable]: both clip drain sites
+     * return early on `!isConfigured`, so without this distinction a full
+     * capture queue on a keystore-invalidated handset produced no
+     * [ClipFlusher.Report] at all, and therefore no fault, forever.
+     */
+    val hasCiphertext: Boolean get() = prefs.getString(key, null) != null
+
+    /**
+     * Stores [token], or clears it when blank.
+     *
+     * @throws RuntimeException propagated from the cipher. Deliberately not
+     *   swallowed: a caller told "saved" when nothing was encrypted would
+     *   send no token and see a 401 with no explanation.
+     */
+    fun putToken(token: String) {
+        val trimmed = token.trim()
+        if (trimmed.isEmpty()) {
+            clearToken()
+            return
+        }
+        prefs.edit()
+            .putString(key, cipher.encrypt(trimmed))
+            .apply()
+    }
+
+    fun clearToken() {
+        prefs.edit().remove(key).apply()
+    }
+
+    /**
+     * The stored CIPHERTEXT, untouched, for [restoreCiphertext] — the rollback
+     * path of [PairingWriter], which must be able to put the previous token
+     * back without encrypting anything (the encryption is what just failed).
+     */
+    internal fun ciphertext(): String? = prefs.getString(key, null)
+
+    internal fun restoreCiphertext(blob: String?) {
+        val e = prefs.edit()
+        if (blob == null) e.remove(key) else e.putString(key, blob)
+        e.commit()
+    }
+
+    companion object {
+        /**
+         * The suffix says what the value is. A future reader must not be able
+         * to mistake this for a plaintext field and "simplify" the cipher
+         * away.
+         */
+        const val KEY_TOKEN_CIPHERTEXT: String = "stt_token_ciphertext_v1"
+    }
+}
+
+/**
+ * The user-visible configuration: the service base URL, and the token via
+ * [TokenStore].
+ *
+ * The base URL is **not** encrypted — it is a private-network address, not a secret,
+ * and encrypting it would only make it unreadable in a bug report.
+ */
+class SttSettings(
+    private val prefs: SharedPreferences,
+    val tokens: TokenStore,
+) {
+
+    /**
+     * The transcription server's base URL, or **null when none is configured**.
+     *
+     * 🔴 There is no default. The app ships knowing no server; it learns one
+     * by pairing (`PairingPayload`) or from Settings, and until then
+     * [isRemoteConfigured] is false and dictation uses the phone's own
+     * recognizer.
+     */
+    var baseUrl: String?
+        get() = prefs.getString(KEY_BASE_URL, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        set(value) {
+            val trimmed = value.orEmpty().trim()
+            if (trimmed.isEmpty()) {
+                prefs.edit().remove(KEY_BASE_URL).apply()
+            } else {
+                prefs.edit().putString(KEY_BASE_URL, trimmed).apply()
+            }
+        }
+
+    /**
+     * Whether the remote path should be attempted at all.
+     *
+     * Defaults to true, but a configuration with no token is treated as "off"
+     * by [isRemoteConfigured] rather than producing a 401 on every recording.
+     */
+    var remoteEnabled: Boolean
+        get() = prefs.getBoolean(KEY_REMOTE_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_REMOTE_ENABLED, value).apply()
+
+    /**
+     * The dictation language the user explicitly chose, or **null** to follow
+     * the device locale.
+     *
+     * 🔴 Null is a real, reachable state and not merely "unset": "follow the
+     * device" is the default and the first entry in the picker, so a user can
+     * deliberately come back to it. Storing the resolved code instead would
+     * freeze whatever the locale happened to be on the day they first opened
+     * Settings.
+     *
+     * The getter filters through [SttLanguage.SUPPORTED] rather than trusting
+     * the file: a code outside the allowlist is an unhandled **500** on the
+     * service, so a preference written by an older build (or hand-edited) must
+     * degrade to "follow the device" rather than break every request.
+     */
+    var language: String?
+        get() = prefs.getString(KEY_LANGUAGE, null)
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it in SttLanguage.SUPPORTED }
+        set(value) {
+            val normalised = value?.trim()?.lowercase()
+            if (normalised == null || normalised !in SttLanguage.SUPPORTED) {
+                prefs.edit().remove(KEY_LANGUAGE).apply()
+            } else {
+                prefs.edit().putString(KEY_LANGUAGE, normalised).apply()
+            }
+        }
+
+    val isRemoteConfigured: Boolean
+        get() = remoteEnabled && baseUrl != null && tokens.hasToken
+
+    /**
+     * The dictation language code **for the wire** — allowlist-constrained,
+     * because the service 500s on anything outside [SttLanguage.SUPPORTED].
+     * The on-device recogniser takes [dictationLocaleTag] instead; the two
+     * share one DECISION and differ only in encoding.
+     *
+     * **The only place [SttLanguage.resolve] is spelled.**
+     *
+     * 🔴 The two transcription paths must agree, and they did not: the remote
+     * request resolved this preference, while the recogniser intent carried no
+     * `EXTRA_LANGUAGE` at all and so silently followed the *device* locale. On
+     * a Spanish handset an operator who had explicitly chosen English still
+     * got Spanish back whenever the on-device engine served the dictation —
+     * which reads as a broken recogniser rather than as a setting one of the
+     * two paths never consulted. Issue #7 fixed that for the remote half only.
+     *
+     * 🔴 So this is deliberately a METHOD on the settings object rather than
+     * the expression repeated at each call site. A predicate open-coded at N
+     * sites is wrong at N−1 of them eventually, and "the language is resolved
+     * here" is exactly the rule that was already missing from one of two
+     * places.
+     *
+     * @param locale the device locale, consulted only when the user has made
+     *   no explicit choice — "follow the device" remains the default.
+     */
+    fun dictationLanguage(locale: Locale): String =
+        SttLanguage.resolve(language, locale)
+
+    /**
+     * The same decision as [dictationLanguage], encoded for **Android's**
+     * recogniser instead of for the wire.
+     *
+     * 🔴 The DECISION is shared — the user's explicit choice, else the device —
+     * and is spelled in exactly these two methods and nowhere else. What
+     * differs is the ENCODING, and it must, because the two consumers have
+     * different constraints:
+     *
+     *  * the service accepts only [SttLanguage.SUPPORTED]; anything else is an
+     *    unhandled **500**, so [dictationLanguage] degrades an unsupported
+     *    locale to [SttLanguage.DEFAULT];
+     *  * `SpeechRecognizer` has **no such allowlist** and happily transcribes
+     *    languages the service cannot. It gets the device's own BCP-47 tag.
+     *
+     * 🔴 Collapsing these two into one string looks like consolidation and is
+     * a REGRESSION: it imports a server-imposed restriction into an engine
+     * that does not have it, so a Hindi handset with no explicit choice would
+     * have its Hindi speech transcribed **as English** on-device — strictly
+     * worse than before the language was plumbed through at all. Operator
+     * decision, 2026-10-31, on an audit finding.
+     *
+     * @return the user's chosen code when there is one, otherwise the device's
+     *   own language tag — region included, and deliberately unfiltered.
+     */
+    fun dictationLocaleTag(locale: Locale): String =
+        language ?: locale.toLanguageTag()
+
+    companion object {
+        const val KEY_BASE_URL: String = "stt_base_url"
+        const val KEY_REMOTE_ENABLED: String = "stt_remote_enabled"
+        const val KEY_LANGUAGE: String = "stt_language"
+        private const val PREFS_NAME = "dicta_stt"
+
+        /**
+         * 🔴 The one place the preferences file name is spelled.
+         *
+         * [ClipSettings.create] goes through here rather than naming
+         * `PREFS_NAME` a second time: the shared clipboard keeps its own
+         * KEYS and its own keystore alias (which is the decision — see that
+         * class), but it has no reason to own a second preferences FILE, and a
+         * second spelling of the name is the drift this method exists to
+         * prevent.
+         */
+        fun prefs(context: Context): SharedPreferences =
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        fun create(context: Context): SttSettings {
+            val prefs = prefs(context)
+            return SttSettings(prefs, TokenStore(prefs, KeystoreCipher()))
+        }
+
+        fun prefsFileName(): String = "$PREFS_NAME.xml"
+    }
+}
