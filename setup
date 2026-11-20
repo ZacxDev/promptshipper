@@ -5,6 +5,7 @@
 #   ./setup --host 100.101.102.103
 #   ./setup --pairing           re-print the pairing QR/payload from the existing .env
 #   ./setup --qr-png FILE       write the QR to FILE (0600) and print only the path
+#   ./setup --pairing --for desktop   a clip-only code for desktop tools (no STT token)
 #   ./setup --rotate            new tokens (every paired device must re-scan)
 #   ./setup --help
 #
@@ -52,6 +53,10 @@ Lifecycle:
   --no-start          write .env and seed the snippet catalog, start nothing
   --pairing           only print the pairing QR/payload from the existing .env
   --no-qr             print the payload without a QR code
+  --for phone|desktop which device the pairing code is for (default phone).
+                      desktop: clip endpoint and token ONLY — no STT object, so
+                      the STT token stays on the phone. For snip, the MCP server
+                      and agents.
   --qr-png PATH       write the pairing QR to PATH as a PNG (mode 0600) and print
                       only the path — never the tokens. Use this when an agent
                       runs setup. Works with --pairing too.
@@ -67,7 +72,7 @@ say() { echo "==> $*"; }
 
 # ---------------------------------------------------------------- arguments
 opt_host="" opt_bind="" opt_stt_port="" opt_clip_port="" opt_profile="" opt_backend=""
-opt_model="" opt_upstream="" rotate=0 start=1 pairing_only=0 qr=1 qr_png="" timeout=1800
+opt_model="" opt_upstream="" rotate=0 start=1 pairing_only=0 qr=1 qr_png="" pair_for=phone timeout=1800
 while (($#)); do
   case "$1" in
     --host) opt_host=${2:?--host needs a value}; shift ;;
@@ -84,6 +89,7 @@ while (($#)); do
     --pairing) pairing_only=1 ;;
     --no-qr) qr=0 ;;
     --qr-png) qr_png=${2:?--qr-png needs a path}; shift ;;
+    --for) pair_for=${2:?--for needs phone or desktop}; shift ;;
     --timeout) timeout=${2:?--timeout needs a value}; shift ;;
     --env-file) ENV_FILE=${2:?--env-file needs a value}; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -92,6 +98,7 @@ while (($#)); do
   shift
 done
 [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a number of seconds"
+[[ "$pair_for" == phone || "$pair_for" == desktop ]] || die "--for must be phone or desktop"
 if [[ -n "$qr_png" ]]; then
   [[ ! -d "$qr_png" ]] || die "--qr-png wants a file path, not a directory"
   [[ -d "$(dirname "$qr_png")" ]] || die "--qr-png: directory $(dirname "$qr_png") does not exist"
@@ -161,11 +168,16 @@ url_for() { # host port -> http://host:port (IPv6 literals bracketed)
 # ---------------------------------------------------------------- pairing
 pairing_host() { local h; h=$(get PAIRING_HOST); printf '%s' "${h:-$(get PROMPTSHIPPER_HOST)}"; }
 pairing_payload() {
-  local name
+  local name stt=""
   name=$(hostname 2>/dev/null | head -n1 | tr -cd 'A-Za-z0-9._-' | head -c 63 || true)
-  printf '{"v":%d,"type":"promptshipper-pairing","name":"%s","stt":{"url":"%s","token":"%s"},"clip":{"url":"%s","token":"%s"}}' \
-    "$PAIRING_VERSION" "${name:-promptshipper}" \
-    "$(url_for "$(pairing_host)" "$(get STT_PORT)")" "$(get STT_API_TOKEN)" \
+  # --for desktop: NO stt object at all (docs/pairing.md: stt is optional), so
+  # the STT token never leaves the phone's pairing code.
+  if [[ "$pair_for" == phone ]]; then
+    stt=$(printf ',"stt":{"url":"%s","token":"%s"}' \
+      "$(url_for "$(pairing_host)" "$(get STT_PORT)")" "$(get STT_API_TOKEN)")
+  fi
+  printf '{"v":%d,"type":"promptshipper-pairing","name":"%s"%s,"clip":{"url":"%s","token":"%s"}}' \
+    "$PAIRING_VERSION" "${name:-promptshipper}" "$stt" \
     "$(url_for "$(pairing_host)" "$(get CLIP_PORT)")" "$(get CLIPSTORE_TOKEN)"
 }
 QRENCODE_HINT="install qrencode (Debian/Ubuntu: apt install qrencode · Fedora: dnf install qrencode · macOS: brew install qrencode · Nix: nix-shell -p qrencode)"
@@ -210,14 +222,18 @@ print_pairing() {
     write_qr_png "$payload" "$qr_png"
     echo
     echo "Pairing QR code written to: ${qr_png}"
-    echo "Open that image and scan it with the app (\"Pair with a server\"). It contains"
-    echo "your tokens: treat it like a password, and delete it once you have paired."
+    echo "Open that image and scan it with the device you are pairing. It contains"
+    echo "secret tokens: treat it like a password, and delete it once you have paired."
     return 0
   fi
   echo
-  echo "Pair your phone: open the app, choose \"Pair with a server\" and scan this code."
+  if [[ "$pair_for" == desktop ]]; then
+    echo "Desktop pairing (clip server only — no STT token): give this to snip / the MCP server."
+  else
+    echo "Pair your phone: open the app, choose \"Pair with a server\" and scan this code."
+  fi
   print_qr "$payload"
-  echo "STT server:  $(url_for "$(pairing_host)" "$(get STT_PORT)")"
+  [[ "$pair_for" == phone ]] && echo "STT server:  $(url_for "$(pairing_host)" "$(get STT_PORT)")"
   echo "Clip server: $(url_for "$(pairing_host)" "$(get CLIP_PORT)")"
   echo "The code contains your tokens: treat it like a password."
   echo "PAIRING_PAYLOAD=${payload}"

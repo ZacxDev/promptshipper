@@ -507,7 +507,52 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 	return out, nil
 }
 
-// ErrNoSuchClip is returned by Delete for an id that is not in the store.
+// After returns up to limit clips whose id is greater than after, OLDEST FIRST
+// (ascending id) — the change feed's read. Ids come from AUTOINCREMENT, so they
+// only ever grow: a cursor that has passed an id never sees a row with a
+// smaller one appear later. (A dedup bump keeps its row's id, so it does not
+// reappear after the cursor; README.md states that contract.)
+func (s *Store) After(ctx context.Context, after int64, limit int) ([]Clip, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, body, device, created_at, bump_count
+		FROM clips
+		WHERE id > ?
+		ORDER BY id ASC
+		LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query clips after %d: %w", after, err)
+	}
+	defer rows.Close()
+	out := []Clip{}
+	for rows.Next() {
+		var c Clip
+		if err := rows.Scan(&c.ID, &c.Body, &c.Device, &c.CreatedAt, &c.BumpCount); err != nil {
+			return nil, fmt.Errorf("scan clip: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate clips: %w", err)
+	}
+	return out, nil
+}
+
+// Get returns one clip by id, or ErrNoSuchClip.
+func (s *Store) Get(ctx context.Context, id int64) (Clip, error) {
+	var c Clip
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, body, device, created_at, bump_count FROM clips WHERE id = ?`, id).
+		Scan(&c.ID, &c.Body, &c.Device, &c.CreatedAt, &c.BumpCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Clip{}, ErrNoSuchClip
+	}
+	if err != nil {
+		return Clip{}, fmt.Errorf("get clip %d: %w", id, err)
+	}
+	return c, nil
+}
+
+// ErrNoSuchClip is returned by Delete and Get for an id that is not in the store.
 var ErrNoSuchClip = errors.New("no such clip")
 
 // Delete removes one clip by id. It returns ErrNoSuchClip when the id was not

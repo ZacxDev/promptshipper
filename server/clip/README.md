@@ -25,6 +25,8 @@ endpoint and nothing else; see "`/healthz` is unauthenticated" below. Errors are
 |---|---|
 | `POST /v1/clips` | `{"body":…,"device":…}` → `201` with the clip, or `200` with `"deduped":true` when an identical body already existed and was bumped to the front |
 | `GET /v1/clips?limit=N&q=…` | `{"clips":[…],"limit":N,"query":"…"}`, newest first |
+| `GET /v1/clips?after=ID&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N}`, clips with `id > ID`, **oldest first**; see *Change feed* |
+| `GET /v1/clips/{id}` | `200` with the clip, or `404 no_such_clip` |
 | `DELETE /v1/clips/{id}` | `204`, or `404 no_such_clip` |
 | `GET /healthz` | `{"status":"ok"}`, or `503 store_unreadable`. **Probe-only, and the one route that needs no token.** Still reads a row. |
 
@@ -82,6 +84,53 @@ Changed from the first cut of this service, which was prefix-only (`q=assw` did
 next start: `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot alter an existing table,
 so `OpenStore` reads the stored DDL and drops and rebuilds the index when it is
 not trigram. The index holds no bodies, so a rebuild loses nothing.
+
+### Change feed (long-poll)
+
+`GET /v1/clips?after=<id>&wait=<seconds>` is how a device learns about new
+clips without hammering the list:
+
+* It returns every clip with `id > after`, **oldest first** (ascending id), up
+  to `limit` (default 100, max 500) — **as soon as at least one exists**.
+* With `wait` (0–60 s, default 0) and nothing new, the request is held open
+  and answers the moment a clip is POSTed, or `{"clips":[]}` when `wait`
+  expires. Never `null`.
+* The cursor is the largest `id` you have seen; poll again with it. Start with
+  `after=0`. To skip history, read the feed with `wait=0` until it returns
+  fewer than `limit` rows and keep its largest `id` — **not** the first row of
+  the newest-first list, which a dedup bump can make an old id.
+* Ids only grow (`AUTOINCREMENT`), so a row never appears behind a cursor
+  that has passed it. They have gaps; never infer anything from them.
+* ⚠ **A dedup bump is not in the feed.** Re-POSTing a body that already
+  exists bumps that row (same `id`), so a cursor past it does not see it
+  again. A pusher that needs the same text to arrive twice must vary it.
+* `after` cannot be combined with `q` (`400 invalid_feed`); `wait` without
+  `after`, or outside 0–60, is `400 invalid_wait`; a negative or non-numeric
+  `after` is `400 invalid_after`.
+* At most 64 requests wait at once; one more gets **`429 too_many_waiters`**
+  with `Retry-After: 5`, immediately. A non-waiting read (`wait=0`) is never
+  refused.
+* Bearer-gated like every clip route. A waiter holds no database connection
+  while it waits (one short `SELECT` per wake-up), so it cannot block writes
+  on the single SQLite writer. The server's write deadline (90 s) outlasts the
+  longest wait, and shutdown releases every waiter with an empty answer.
+
+Long-poll rather than SSE: one ordinary request/response per poll survives
+flaky mobile networks, proxies and an Android foreground service being
+suspended, with no reconnection protocol to get right.
+
+#### The phone's auto-copy contract
+
+The Android app polls this feed while its bubble service runs and **auto-copies
+to the system clipboard ONLY clips whose `device` is exactly `mcp`** — text an
+agent pushed via the MCP server. Every other clip (captured on a phone, a
+laptop, by snip) is listed but never copied unasked. So:
+
+* the MCP server (and anything else meant to land on the phone's clipboard)
+  POSTs with `"device":"mcp"`;
+* nothing else may use `mcp` as its device name;
+* the server does not enforce either rule — `device` is a free string — so the
+  contract lives with the clients and this paragraph.
 
 ### Fails loud, never empty
 
@@ -157,7 +206,7 @@ store: SQLite serves `count(*)` from its page cache (measured against
 * **No labels or categories.** This is a clipboard. The labelled store is the
   snippet catalog served by the STT server.
 * **No TLS and no public exposure.** See *Shape*.
-* **No server→phone push.**
+* **No server→phone push channel** beyond the long-poll change feed above.
 
 ## Local loop
 

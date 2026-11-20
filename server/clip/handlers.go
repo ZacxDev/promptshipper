@@ -76,18 +76,24 @@ const (
 type clipStore interface {
 	Put(ctx context.Context, body, device string, nowMillis int64) (Clip, bool, error)
 	List(ctx context.Context, limit int, q string) ([]Clip, error)
+	After(ctx context.Context, after int64, limit int) ([]Clip, error)
+	Get(ctx context.Context, id int64) (Clip, error)
 	Delete(ctx context.Context, id int64) error
 	Ping(ctx context.Context) error
 }
 
-// API is the HTTP surface. Four operations: the three that read or write a clip
-// are bearer-gated, and /healthz is not. See routeTable.
+// API is the HTTP surface. Every route that reads or writes a clip is
+// bearer-gated, and /healthz is not. See routeTable.
 type API struct {
 	store clipStore
 	token string
 	// now is injected so the dedup-bump test can pin two different timestamps
 	// without sleeping.
 	now func() time.Time
+	// changes wakes long-poll waiters on every write; waiters bounds them.
+	// See feed.go.
+	changes *changes
+	waiters chan struct{}
 }
 
 // NewAPI builds the API. token must already have been validated by the caller
@@ -97,7 +103,8 @@ func NewAPI(store clipStore, token string, now func() time.Time) *API {
 	if now == nil {
 		now = time.Now
 	}
-	return &API{store: store, token: token, now: now}
+	return &API{store: store, token: token, now: now, changes: newChanges(),
+		waiters: make(chan struct{}, MaxWaiters)}
 }
 
 // muxRoute is one registration: the http.ServeMux pattern and its handler.
@@ -130,6 +137,7 @@ func (a *API) routeTable() (gated, public []muxRoute) {
 	gated = []muxRoute{
 		{"POST /v1/clips", a.postClip},
 		{"GET /v1/clips", a.listClips},
+		{"GET /v1/clips/{id}", a.getClip},
 		{"DELETE /v1/clips/{id}", a.deleteClip},
 	}
 	public = []muxRoute{
@@ -287,6 +295,9 @@ func (a *API) postClip(w http.ResponseWriter, r *http.Request) {
 			"the clip store could not be written")
 		return
 	}
+	// Wake long-poll waiters. A dedup bump wakes them too; they re-query and
+	// find nothing new (a bump keeps its id), which costs one cheap SELECT.
+	a.changes.notify()
 	status := http.StatusCreated
 	if deduped {
 		status = http.StatusOK
@@ -305,6 +316,16 @@ type listClipsResponse struct {
 }
 
 func (a *API) listClips(w http.ResponseWriter, r *http.Request) {
+	// `after` switches this route to the change feed (oldest first, optional
+	// long-poll). Without it the route is exactly the newest-first list it was.
+	if r.URL.Query().Has("after") {
+		a.feedClips(w, r)
+		return
+	}
+	if r.URL.Query().Has("wait") {
+		writeErr(w, http.StatusBadRequest, "invalid_wait", "`wait` is only valid with `after`")
+		return
+	}
 	limit := DefaultLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -401,7 +422,8 @@ type errorResponse struct {
 	// verbatim. The set is closed: unauthorized, invalid_json, empty_body,
 	// body_too_large, missing_device, device_too_long, request_too_large,
 	// invalid_limit, invalid_id, no_such_clip, store_unreadable,
-	// store_unwritable.
+	// store_unwritable, and for the change feed invalid_after, invalid_wait,
+	// invalid_feed, too_many_waiters.
 	Error string `json:"error"`
 	// Detail is prose for a human reading a log or a toast. Never parsed.
 	Detail string `json:"detail,omitempty"`

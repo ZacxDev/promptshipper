@@ -43,6 +43,9 @@ import (
 	"time"
 )
 
+// writeTimeout is the server's per-response write deadline; see main.
+const writeTimeout = (MaxWaitSeconds + 30) * time.Second
+
 // tokenEnv is the only way the bearer token is supplied. There is no flag for
 // it: a flag value is visible in the pod's argv and in `kubectl describe`.
 const tokenEnv = "CLIPSTORE_TOKEN"
@@ -127,8 +130,11 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		// A clip body can be 256 KiB over a VPN link from a phone on mobile
 		// data; 60s is generous for that and still bounded.
-		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		ReadTimeout: 60 * time.Second,
+		// Must outlast the longest long-poll (MaxWaitSeconds) plus the write of
+		// its answer, or the server would cut every full-length wait.
+		// TestTheWriteTimeoutOutlastsTheLongestWait pins it.
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -144,6 +150,8 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		// Release long-poll waiters first, or Shutdown sits out a 60 s wait.
+		api.Shutdown()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("clipstore: shutdown: %v", err)
 		}
