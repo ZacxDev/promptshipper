@@ -177,3 +177,78 @@ func TestMainRefusesAClipContainingATokenFromTheEnvironment(t *testing.T) {
 		t.Fatalf("an ordinary clip was not stored: %d\n%s", code, stderr.String())
 	}
 }
+
+// 🔴 THE SEAM, startup half: main() must RUN the refused-token scan, not just
+// pass the list to the API. TestTheStartupScanCountsRefusedTokenClipsByPosition
+// calls reportRefusedTokenClips directly and cannot see main stop calling it.
+// The scan runs before the listener opens, so once /healthz answers, its line
+// is already on stderr.
+func TestMainRunsTheStartupRefusedTokenScan(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "c.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRows(t, s, [2]string{"pasted " + sttToken, "phone"})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-addr", addr, "-db", dbPath)
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, tokenEnv+"=") || strings.HasPrefix(kv, reexecEnv+"=") ||
+			strings.HasPrefix(kv, refuseEnv+"=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, reexecEnv+"=1", tokenEnv+"="+feedToken, refuseEnv+"="+sttToken)
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stderr, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait() // joins the stderr copier, so the buffer is safe to read
+		}
+	}
+	t.Cleanup(stop)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		r, err := http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			r.Body.Close()
+			if r.StatusCode == 200 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatalf("clipstore never became healthy: %v\n%s", err, stderr.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	stop()
+	msg := stderr.String()
+	if !strings.Contains(msg, "1 stored clip(s) contain the credential in CLIPSTORE_REFUSE_TOKENS entry 1") {
+		t.Fatalf("main() did not run the startup refused-token scan:\n%s", msg)
+	}
+	if strings.Contains(msg, sttToken) || strings.Contains(msg, "pasted") {
+		t.Fatalf("the startup scan printed the token or the clip:\n%s", msg)
+	}
+}

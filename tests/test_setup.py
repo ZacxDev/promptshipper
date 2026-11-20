@@ -205,6 +205,12 @@ NOT_PRIVATE_HOSTS = [
     "fd00:::1", "fd00::1:2:3:4:5:6:7", "::ffff:10.0.0.1", "fe80::1", "2001:db8::1", "::2",
     "10.0.0.256", "010.0.0.1", "9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0",
     "192.167.255.255", "192.169.0.0", "100.63.255.255", "100.128.0.0", "128.0.0.0", "169.254.1.1",
+    # Each kills a mutant the vectors above let survive (PrivateNetwork.kt refuses all three):
+    "fd00:1:2:3",  # full form (no "::") with only 4 groups — kills dropping the ==8 count
+    "0fd00::1",  # a 5-digit group — kills widening {1,4}; 0fd00 >> 8 would read as 0xfd
+    "012.0.0.1",  # leading-zero octet: bash arithmetic reads 012 as octal 10, so a setup
+    # that allowed leading zeros would bind it as 10.0.0.1 — kills that mutant.
+    # "010.0.0.1" cannot: octal 010 is 8, which is public, so it is refused either way.
 ]
 
 

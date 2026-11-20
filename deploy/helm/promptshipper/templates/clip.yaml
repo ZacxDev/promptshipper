@@ -4,6 +4,16 @@
 {{- $name := include "promptshipper.componentName" $ctx }}
 {{- $secret := include "promptshipper.authSecretName" $ctx }}
 {{- $claim := include "promptshipper.claimName" $ctx }}
+{{- /* With stt.enabled the chart owns CLIPSTORE_REFUSE_TOKENS (below). A
+       second entry of that name from extraEnv is a duplicate env name, and
+       Kubernetes keeps the LAST — silently dropping the STT-token refusal. */}}
+{{- if .Values.stt.enabled }}
+{{- range $c.extraEnv }}
+{{- if eq (toString .name) "CLIPSTORE_REFUSE_TOKENS" }}
+{{- fail "clip.extraEnv must not set CLIPSTORE_REFUSE_TOKENS while stt.enabled: the chart sets it from the STT Secret, and a duplicate would silently replace it (see server/clip/README.md, \"Not covered\")" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if and (not $c.auth.existingSecret) $c.auth.token }}
 {{- if lt (len $c.auth.token) 24 }}
 {{- fail "clip.auth.token must be at least 24 bytes (clip refuses a shorter one at startup)" }}

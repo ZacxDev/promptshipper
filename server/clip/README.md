@@ -183,8 +183,15 @@ a readable clip may already have been read, and only rotation retires it.
 `DELETE /v1/clips/{id}` if you want them gone.)
 
 ⚠ **Not covered:** the STT server's *extra* named tokens (`STT_API_TOKENS`).
-The chart and compose pass only `STT_API_TOKEN`; add others to
-`CLIPSTORE_REFUSE_TOKENS` by hand (comma-separated raw values) if you use them.
+The chart and compose pass only `STT_API_TOKEN`. With compose (or clip running
+alone), add the others to `CLIPSTORE_REFUSE_TOKENS` by hand as one
+comma-separated list of raw values — the main token included, since the
+variable is replaced, not appended to. With the Helm chart and `stt.enabled`
+there is **no** supported way to add them: the chart sets
+`CLIPSTORE_REFUSE_TOKENS` itself, and it **refuses to render** if
+`clip.extraEnv` also names it (a duplicate env name would make Kubernetes keep
+the last entry and silently drop the STT-token refusal). Under Helm, extra STT
+tokens stay uncovered.
 
 ### Fails loud, never empty
 
