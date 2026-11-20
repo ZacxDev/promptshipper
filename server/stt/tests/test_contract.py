@@ -13,7 +13,7 @@ import pytest
 
 from backends import BackendRequestError, BackendUnavailable, Transcript
 from backends.fake import FakeBackend
-from conftest import TOKEN as TOKEN_DEFAULT, auth, silence, tone, upload
+from conftest import auth, silence, tone, upload
 
 # 🔴 A LITERAL, not derived from app.DIAGNOSTIC_KEYS: a key set asserted against
 # itself is not a contract.
@@ -194,10 +194,10 @@ def test_backend_request_error_is_400_and_unavailable_is_a_RETRYABLE_503(make_cl
     assert "STT_API_TOKEN" not in r.json()["detail"]
 
 
-def test_the_unauthenticated_routes_are_exactly_healthz_and_root(make_client):
+def test_the_only_unauthenticated_route_is_healthz(make_client):
     c, _, _ = make_client()
     assert c.get("/healthz").status_code == 200
-    assert c.get("/").status_code == 200
+    assert c.get("/").status_code == 401
     assert c.get("/v1/snippets").status_code == 401
     assert upload(c, tone(), headers={}).status_code == 401
     assert upload(c, tone(), headers=auth("wrong-token-wrong-token-wrong")).status_code == 401
@@ -219,13 +219,13 @@ def test_no_token_configured_is_the_PERMANENT_503(make_client):
     assert c.get("/healthz").status_code == 200
 
 
-def test_named_tokens_each_authenticate_and_no_header_changes_that(make_client):
-    c, _, _ = make_client(STT_API_TOKENS="phone:phone-token-abcdefghijkl,laptop:laptop-token-abcdefghijk")
-    for tok in (TOKEN_DEFAULT, "phone-token-abcdefghijkl", "laptop-token-abcdefghijk"):
-        assert upload(c, tone(), headers=auth(tok)).status_code == 200
-    # The former "public entry" header is gone: it neither grants nor narrows.
-    assert upload(c, tone(), headers={**auth("phone-token-abcdefghijkl"), "X-STT-Entry": "public"}).status_code == 200
-    assert upload(c, tone(), headers={"X-STT-Entry": "public"}).status_code == 401
+def test_the_public_entry_header_narrows_to_public_tokens(make_client):
+    c, _, _ = make_client(STT_API_TOKENS="phone:public:phone-token-abcdefghijkl,laptop:laptop-token-abcdefghijk")
+    hdr = {"X-STT-Entry": "public"}
+    assert upload(c, tone(), headers={**auth(), **hdr}).status_code == 403
+    assert upload(c, tone(), headers={**auth("laptop-token-abcdefghijk"), **hdr}).status_code == 403
+    assert upload(c, tone(), headers={**auth("phone-token-abcdefghijkl"), **hdr}).status_code == 200
+    assert upload(c, tone(), headers=auth("laptop-token-abcdefghijk")).status_code == 200
 
 
 def test_an_unknown_backend_refuses_boot(load_app):

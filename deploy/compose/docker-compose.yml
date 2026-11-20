@@ -14,12 +14,39 @@ name: promptshipper
 x-stt: &stt
   restart: unless-stopped
   pull_policy: ${PULL_POLICY:-build}
+  # EVERY setting documented in server/stt/README.md and the backends, passed
+  # through from .env. Blank = the server's default (it treats blank as unset).
+  # tests/test_compose.py fails if a documented or code-read setting is missing.
   environment: &stt-env
     STT_API_TOKEN: ${STT_API_TOKEN:-}
     STT_API_TOKENS: ${STT_API_TOKENS:-}
     STT_MODEL: ${STT_MODEL:-}
     STT_NO_SPEECH_MAX: ${STT_NO_SPEECH_MAX:-}
     STT_AVG_LOGPROB_MIN: ${STT_AVG_LOGPROB_MIN:-}
+    STT_MAX_AUDIO_SECONDS: ${STT_MAX_AUDIO_SECONDS:-}
+    STT_MAX_UPLOAD_BYTES: ${STT_MAX_UPLOAD_BYTES:-}
+    # faster-whisper
+    STT_DEVICE: ${STT_DEVICE:-}
+    STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE:-}
+    STT_BEAM_SIZE: ${STT_BEAM_SIZE:-}
+    STT_VAD: ${STT_VAD:-}
+    STT_CPU_THREADS: ${STT_CPU_THREADS:-}
+    # openai passthrough
+    STT_UPSTREAM_URL: ${STT_UPSTREAM_URL:-}
+    STT_UPSTREAM_TOKEN: ${STT_UPSTREAM_TOKEN:-}
+    STT_UPSTREAM_MODEL: ${STT_UPSTREAM_MODEL:-}
+    STT_UPSTREAM_FORMAT: ${STT_UPSTREAM_FORMAT:-}
+    STT_UPSTREAM_TIMEOUT: ${STT_UPSTREAM_TIMEOUT:-}
+    # cohere
+    STT_MAX_NEW_TOKENS: ${STT_MAX_NEW_TOKENS:-}
+    STT_SCORES: ${STT_SCORES:-}
+    # Gated cohere model: a token from a Hugging Face account that accepted its terms.
+    HF_TOKEN: ${HF_TOKEN:-}
+    # The image's model cache path. NOT blank-defaulted: an empty HF_HOME would
+    # override the image's ENV and break the download location.
+    HF_HOME: ${HF_HOME:-/models/hf}
+    # fake (tests and smoke runs only)
+    STT_FAKE_TEXT: ${STT_FAKE_TEXT:-}
   ports:
     - "${BIND:-127.0.0.1}:${STT_PORT:-8118}:8000"
   volumes:
@@ -43,11 +70,6 @@ services:
     environment:
       <<: *stt-env
       STT_BACKEND: ${STT_BACKEND:-faster-whisper}
-      STT_DEVICE: ${STT_DEVICE:-}
-      STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE:-}
-      STT_UPSTREAM_URL: ${STT_UPSTREAM_URL:-}
-      STT_UPSTREAM_TOKEN: ${STT_UPSTREAM_TOKEN:-}
-      STT_UPSTREAM_MODEL: ${STT_UPSTREAM_MODEL:-}
 
   stt-gpu:
     <<: *stt
@@ -59,8 +81,6 @@ services:
     environment:
       <<: *stt-env
       STT_BACKEND: cohere
-      # Gated model: a token from a Hugging Face account that accepted its terms.
-      HF_TOKEN: ${HF_TOKEN:-}
     deploy:
       resources:
         reservations:

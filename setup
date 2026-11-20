@@ -27,19 +27,22 @@ usage() {
 Usage: ./setup [options]
 
 Where the phone reaches this machine:
-  --host HOST         address the phone uses (Tailscale IP, LAN IP or DNS name).
-                      Default: kept from .env, else `tailscale ip -4`, else this
-                      machine's primary LAN IP.
-  --bind ADDR         host address to publish the ports on. Default: kept from
-                      .env, else the --host value when it is an IP (so a
-                      Tailscale host listens on the tailnet only), else 0.0.0.0.
+  --host HOST         address the phone uses (Tailscale IP, LAN IP, IPv6, or a DNS
+                      name, which is resolved: the pairing code carries the
+                      address). Default: kept from .env, else `tailscale ip -4`,
+                      else this machine's primary LAN IP.
+  --bind ADDR         host address to publish the ports on. Default: a bind you
+                      set before is kept; otherwise the --host address, and ONLY
+                      if it is private (RFC 1918, Tailscale/CGNAT, IPv6 ULA,
+                      loopback) — a public address is refused. Never 0.0.0.0
+                      unless you pass it here (with a loud warning).
   --stt-port N        default 8118
   --clip-port N       default 8139
 
 Transcription:
   --cpu               faster-whisper on the CPU (default)
   --gpu               the opt-in cohere backend on an NVIDIA GPU (needs HF_TOKEN
-                      in the environment; its license is not yet reviewed)
+                      for the gated model; see server/stt/README.md)
   --backend NAME      cpu profile backend: faster-whisper | openai | fake
   --model NAME        model name (faster-whisper default: small)
   --upstream-url URL  for --backend openai
@@ -102,8 +105,8 @@ case "$opt_backend" in ""|faster-whisper|openai|fake) ;; *) die "--backend must 
 # Parsed as KEY=VALUE lines, never `source`d: a .env is data, not a script.
 declare -A cfg=()
 declare -a extra_lines=()
-MANAGED_KEYS=(COMPOSE_PROFILES PROMPTSHIPPER_HOST BIND STT_PORT CLIP_PORT STT_API_TOKEN CLIPSTORE_TOKEN
-  STT_BACKEND STT_MODEL STT_UPSTREAM_URL PULL_POLICY PROMPTSHIPPER_VERSION)
+MANAGED_KEYS=(COMPOSE_PROFILES PROMPTSHIPPER_HOST PAIRING_HOST BIND BIND_AUTO STT_PORT CLIP_PORT
+  STT_API_TOKEN CLIPSTORE_TOKEN STT_BACKEND STT_MODEL STT_UPSTREAM_URL PULL_POLICY PROMPTSHIPPER_VERSION)
 is_managed() { local k; for k in "${MANAGED_KEYS[@]}"; do [[ "$k" == "$1" ]] && return 0; done; return 1; }
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -116,48 +119,77 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 get() { printf '%s' "${cfg[$1]:-}"; }
 
-# ---------------------------------------------------------------- pairing
+# ---------------------------------------------------------------- addresses
 is_ipv4() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+is_ipv6() { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
+is_ip() { is_ipv4 "$1" || is_ipv6 "$1"; }
+is_wildcard() { [[ "$1" == 0.0.0.0 || "$1" == "::" ]]; }
+# Private = reachable only on a private network: RFC 1918, the CGNAT range
+# Tailscale uses (100.64.0.0/10), loopback, IPv6 ULA (fc00::/7, incl. Tailscale's
+# fd7a:115c:a1e0::/48) and ::1. The same ranges docs/pairing.md lets the app
+# talk plain HTTP to.
+is_private() {
+  local a=$1 o1 o2
+  if is_ipv4 "$a"; then
+    IFS=. read -r o1 o2 _ _ <<<"$a"
+    ((o1 == 10 || o1 == 127)) && return 0
+    ((o1 == 172 && o2 >= 16 && o2 <= 31)) && return 0
+    ((o1 == 192 && o2 == 168)) && return 0
+    ((o1 == 100 && o2 >= 64 && o2 <= 127)) && return 0
+    return 1
+  fi
+  a=$(printf '%s' "$a" | tr 'A-F' 'a-f')
+  [[ "$a" == ::1 || "$a" == fc* || "$a" == fd* ]]
+}
+resolve() { # name -> its first IPv4 address, else first IPv6, else nothing
+  local fam addr
+  command -v getent >/dev/null 2>&1 || return 0
+  for fam in ahostsv4 ahostsv6; do
+    addr=$(getent "$fam" "$1" 2>/dev/null | awk 'NR==1{print $1}' || true)
+    if is_ip "$addr"; then printf '%s' "$addr"; return 0; fi
+  done
+}
+address_of() { # host -> an IP literal (itself, or what the name resolves to)
+  if is_ip "$1"; then printf '%s' "$1"; else resolve "$1"; fi
+}
 url_for() { # host port -> http://host:port (IPv6 literals bracketed)
   local h=$1
   [[ "$h" == *:* ]] && h="[$h]"
   printf 'http://%s:%s' "$h" "$2"
 }
+
+# ---------------------------------------------------------------- pairing
+pairing_host() { local h; h=$(get PAIRING_HOST); printf '%s' "${h:-$(get PROMPTSHIPPER_HOST)}"; }
 pairing_payload() {
   local name
   name=$(hostname 2>/dev/null | head -n1 | tr -cd 'A-Za-z0-9._-' | head -c 63 || true)
   printf '{"v":%d,"type":"promptshipper-pairing","name":"%s","stt":{"url":"%s","token":"%s"},"clip":{"url":"%s","token":"%s"}}' \
     "$PAIRING_VERSION" "${name:-promptshipper}" \
-    "$(url_for "$(get PROMPTSHIPPER_HOST)" "$(get STT_PORT)")" "$(get STT_API_TOKEN)" \
-    "$(url_for "$(get PROMPTSHIPPER_HOST)" "$(get CLIP_PORT)")" "$(get CLIPSTORE_TOKEN)"
+    "$(url_for "$(pairing_host)" "$(get STT_PORT)")" "$(get STT_API_TOKEN)" \
+    "$(url_for "$(pairing_host)" "$(get CLIP_PORT)")" "$(get CLIPSTORE_TOKEN)"
 }
+QRENCODE_HINT="install qrencode (Debian/Ubuntu: apt install qrencode · Fedora: dnf install qrencode · macOS: brew install qrencode · Nix: nix-shell -p qrencode)"
+# 🔴 qrencode must be LOCAL. An earlier version fell back to piping the payload
+# (both tokens) into a network-fetched alpine container; that sends secrets into
+# an unpinned image for the sake of a convenience one package install replaces.
 print_qr() {
   local payload=$1
   ((qr)) || return 0
   if command -v qrencode >/dev/null 2>&1; then
     printf '%s' "$payload" | qrencode -t ANSIUTF8 -m 2
-  elif command -v docker >/dev/null 2>&1; then
-    printf '%s' "$payload" | docker run --rm -i alpine:3.20 sh -c \
-      'apk add -q --no-progress libqrencode-tools >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 2' \
-      || echo "(could not render a QR code; install qrencode, or paste the payload below)"
   else
-    echo "(install qrencode to see a QR code; the payload below is the same thing)"
+    echo "(${QRENCODE_HINT} to see a QR code here; the payload below is the same thing)"
   fi
 }
 write_qr_png() { # payload path — the payload goes only into the file, never to a stream
   local payload=$1 path=$2 tmp
+  command -v qrencode >/dev/null 2>&1 || die "--qr-png needs qrencode: ${QRENCODE_HINT}" 5
   tmp=$(umask 077 && mktemp "${path}.XXXXXX") || die "cannot create a file next to ${path}" 5
-  if command -v qrencode >/dev/null 2>&1; then
-    printf '%s' "$payload" | qrencode -t PNG -m 2 -s 8 -o "$tmp" 2>/dev/null || true
-  elif command -v docker >/dev/null 2>&1; then
-    printf '%s' "$payload" | docker run --rm -i alpine:3.20 sh -c \
-      'apk add -q --no-progress libqrencode-tools >/dev/null 2>&1 && qrencode -t PNG -m 2 -s 8 -o -' \
-      >"$tmp" 2>/dev/null || true
-  fi
-  # A PNG starts with these 8 bytes; anything else (empty, an error page) is a failure.
+  printf '%s' "$payload" | qrencode -t PNG -m 2 -s 8 -o "$tmp" 2>/dev/null || true
+  # A PNG starts with these 8 bytes; anything else (empty, an error) is a failure.
   if [[ "$(head -c 8 "$tmp" | od -An -tx1 | tr -d ' \n')" != 89504e470d0a1a0a ]]; then
     rm -f "$tmp"
-    die "could not render the pairing QR as a PNG (install qrencode)" 5
+    die "could not render the pairing QR as a PNG with qrencode" 5
   fi
   chmod 600 "$tmp"
   mv -f "$tmp" "$path"
@@ -167,6 +199,11 @@ print_pairing() {
   [[ -n "$(get STT_API_TOKEN)" && -n "$(get CLIPSTORE_TOKEN)" && -n "$(get PROMPTSHIPPER_HOST)" ]] \
     || die "no complete configuration in ${ENV_FILE}; run ./setup first"
   payload=$(pairing_payload)
+  if ! is_private "$(pairing_host)"; then
+    echo "setup: warning: the pairing address $(pairing_host) is not a private-network address." >&2
+    echo "       The app only allows plain HTTP to private addresses (docs/pairing.md), so it" >&2
+    echo "       will refuse this pairing. Use a Tailscale/LAN address, or put a TLS proxy in front." >&2
+  fi
   if [[ -n "$qr_png" ]]; then
     # 🔴 For agent-run installs: only the PATH is printed. The payload holds
     # both tokens and must not reach stdout/stderr, which an agent reads.
@@ -180,8 +217,8 @@ print_pairing() {
   echo
   echo "Pair your phone: open the app, choose \"Pair with a server\" and scan this code."
   print_qr "$payload"
-  echo "STT server:  $(url_for "$(get PROMPTSHIPPER_HOST)" "$(get STT_PORT)")"
-  echo "Clip server: $(url_for "$(get PROMPTSHIPPER_HOST)" "$(get CLIP_PORT)")"
+  echo "STT server:  $(url_for "$(pairing_host)" "$(get STT_PORT)")"
+  echo "Clip server: $(url_for "$(pairing_host)" "$(get CLIP_PORT)")"
   echo "The code contains your tokens: treat it like a password."
   echo "PAIRING_PAYLOAD=${payload}"
 }
@@ -228,14 +265,43 @@ host=${opt_host:-$(get PROMPTSHIPPER_HOST)}
 [[ -n "$host" ]] || host=$(detect_host)
 [[ -n "$host" ]] || die "could not detect this machine's address; pass --host <ip-or-name>"
 [[ "$host" =~ ^[A-Za-z0-9.:-]+$ ]] || die "--host must be an IP address or a DNS name: $host"
+prev_host=$(get PROMPTSHIPPER_HOST)
 cfg[PROMPTSHIPPER_HOST]=$host
 
-bind=${opt_bind:-$(get BIND)}
-if [[ -z "$bind" || ( -n "$opt_host" && -z "$opt_bind" ) ]]; then
-  # A new --host re-derives the bind address unless --bind was given too.
-  if is_ipv4 "$host"; then bind=$host; else bind=0.0.0.0; fi
+# The address the phone is told to use. v1 pairing carries an IP literal: the
+# app allows plain HTTP only to private ADDRESSES, which a name cannot prove.
+addr=$(address_of "$host")
+[[ -n "$addr" ]] || die "could not resolve --host ${host} to an address; pass an IP address, or check the name"
+cfg[PAIRING_HOST]=$addr
+[[ "$addr" != "$host" ]] && say "${host} resolves to ${addr}; the pairing code uses the address"
+
+# 🔴 THE BIND ADDRESS IS NEVER SILENTLY 0.0.0.0. Precedence:
+#   1. --bind (explicit; a wildcard gets a loud warning)
+#   2. a BIND that was set by hand (no BIND_AUTO=1 beside it) — kept, always
+#   3. the previous automatic BIND, while --host is unchanged
+#   4. derived from --host: its address, but ONLY if that is private —
+#      a public address is refused, because these services speak plain HTTP.
+bind_auto=""
+if [[ -n "$opt_bind" ]]; then
+  bind=$opt_bind
+  is_ip "$bind" || die "--bind must be an IP address: ${bind}"
+elif [[ -n "$(get BIND)" && "$(get BIND_AUTO)" != 1 ]]; then
+  bind=$(get BIND)
+elif [[ -n "$(get BIND)" && "$host" == "$prev_host" ]]; then
+  bind=$(get BIND) bind_auto=1
+else
+  is_private "$addr" || die "${host} is a public address (${addr}). These services speak plain HTTP with bearer tokens, so setup will not publish them there on its own. Use a private address (Tailscale, LAN) as --host, or pass --bind <addr> explicitly if a TLS proxy fronts them."
+  bind=$addr bind_auto=1
+fi
+if is_wildcard "$bind"; then
+  echo "setup: WARNING: --bind ${bind} publishes plain-HTTP services on EVERY network interface of" >&2
+  echo "       this machine. Only do this behind a firewall or a TLS proxy — never on an" >&2
+  echo "       internet-facing host." >&2
+elif ! is_private "$bind"; then
+  echo "setup: WARNING: --bind ${bind} is a public address; the services speak plain HTTP." >&2
 fi
 cfg[BIND]=$bind
+cfg[BIND_AUTO]=$bind_auto
 cfg[STT_PORT]=${opt_stt_port:-$(get STT_PORT)}
 cfg[STT_PORT]=${cfg[STT_PORT]:-8118}
 cfg[CLIP_PORT]=${opt_clip_port:-$(get CLIP_PORT)}
@@ -291,7 +357,8 @@ chmod 600 "$tmp"
 mv -f "$tmp" "$ENV_FILE"
 say "wrote ${ENV_FILE}$( ((rotated)) && echo ' (new tokens)')"
 
-snip_dir="$(dirname "$ENV_FILE")/snippets"
+# Where compose mounts it (./snippets relative to deploy/compose), whatever --env-file says.
+snip_dir="${COMPOSE_DIR}/snippets"
 if [[ ! -f "${snip_dir}/snippets.json" ]]; then
   mkdir -p "$snip_dir"
   cp "$EXAMPLE_SNIPPETS" "${snip_dir}/snippets.json"
@@ -316,7 +383,8 @@ COMPOSE_PROFILES=$profile dc up -d "${build[@]}" clip "$active"
 
 # ---------------------------------------------------------------- verify
 probe_host=$bind
-[[ "$probe_host" == 0.0.0.0 || "$probe_host" == "::" ]] && probe_host=127.0.0.1
+[[ "$probe_host" == 0.0.0.0 ]] && probe_host=127.0.0.1
+[[ "$probe_host" == "::" ]] && probe_host=::1
 stt_probe=$(url_for "$probe_host" "${cfg[STT_PORT]}")
 clip_probe=$(url_for "$probe_host" "${cfg[CLIP_PORT]}")
 
@@ -338,18 +406,24 @@ wait_healthy() { # name url
 wait_healthy clip "$clip_probe" clip
 wait_healthy stt "$stt_probe" "$active"
 
+# The bearer header goes to curl through a 0600 file (`-H @file`), never argv,
+# where any local user could read it from the process table.
+hdr_dir=$(umask 077 && mktemp -d)
+trap 'rm -rf "$hdr_dir"' EXIT
 check_auth() { # name url token
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $3" "$2" || true)
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$3" >"${hdr_dir}/h")
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "@${hdr_dir}/h" "$2" || true)
+  rm -f "${hdr_dir}/h"
   [[ "$code" == 200 ]] || { echo "setup: $1 is up but answered ${code} to its own token at $2" >&2; exit 4; }
 }
 check_auth clip "${clip_probe}/v1/clips?limit=1" "${cfg[CLIPSTORE_TOKEN]}"
 check_auth stt "${stt_probe}/v1/snippets" "${cfg[STT_API_TOKEN]}"
 say "both services accept their tokens"
 
-if [[ "$probe_host" != "$host" ]]; then
-  if ! curl -s -o /dev/null --max-time 5 "$(url_for "$host" "${cfg[STT_PORT]}")/healthz"; then
-    echo "setup: warning: the phone's address $(url_for "$host" "${cfg[STT_PORT]}") is not reachable from this machine." >&2
+if [[ "$probe_host" != "$addr" ]]; then
+  if ! curl -s -o /dev/null --max-time 5 "$(url_for "$addr" "${cfg[STT_PORT]}")/healthz"; then
+    echo "setup: warning: the phone's address $(url_for "$addr" "${cfg[STT_PORT]}") is not reachable from this machine." >&2
     echo "       Check --host / --bind (the ports are published on ${bind})." >&2
   fi
 fi

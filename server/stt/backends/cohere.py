@@ -1,12 +1,9 @@
 """Opt-in GPU backend: Cohere Transcribe via Hugging Face transformers.
 
-🔴 LICENSE NOT YET CHECKED FOR REDISTRIBUTION OR ADVERTISING. The model
-(`CohereLabs/cohere-transcribe-03-2026` by default) is GATED on the Hugging Face
-Hub: downloading it needs an `HF_TOKEN` from an account that accepted its terms.
-This project ships only the code that loads it, never the weights. Do not
-advertise this backend as a supported option until its license has been read and
-approved — that decision is the maintainer's, and it is recorded as open in
-`server/stt/README.md`.
+The model (`CohereLabs/cohere-transcribe-03-2026` by default) is licensed
+Apache-2.0 per its Hugging Face model card, and GATED on the Hub: downloading it
+needs an `HF_TOKEN` from an account that accepted its terms. This project ships
+only the code that loads it, never the weights. See `server/stt/README.md`.
 
 Selected by `STT_BACKEND=cohere` (the compose `gpu` profile). Needs the
 `Dockerfile.cohere` image (CUDA torch + transformers >= 5).

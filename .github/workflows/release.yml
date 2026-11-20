@@ -1,7 +1,8 @@
 name: release images
 
 # Images are pushed to GHCR ONLY from a `v*` tag. The opt-in cohere (GPU) image
-# is deliberately NOT published until its model's license has been reviewed.
+# is not published: it is several GB, and compose builds it locally for the few
+# users who opt in.
 on:
   push:
     tags: ["v*"]

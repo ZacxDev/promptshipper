@@ -1,7 +1,8 @@
 # promptshipper STT server — GPU image for the opt-in `cohere` backend.
 #
-# 🔴 LICENSE NOT YET CHECKED: see backends/cohere.py. This image contains no
-# model weights; the gated model downloads at first start with your HF_TOKEN.
+# Opt-in; built locally by compose, not published. This image contains no model
+# weights: the gated (Apache-2.0) model downloads at first start with your
+# HF_TOKEN — see server/stt/README.md.
 #
 # Torch comes from the base image (it IS the torch/CUDA pin); installing torch
 # from PyPI here could silently replace the CUDA build with a CPU one.
