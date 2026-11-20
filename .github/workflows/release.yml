@@ -50,3 +50,29 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  # The Helm chart, packaged with the tag's version (chart version ==
+  # appVersion == the image tag above) and pushed to
+  # oci://ghcr.io/zacxdev/charts/promptshipper. `needs: image` waits for EVERY
+  # matrix leg and is skipped if any fails, so a chart is never published that
+  # points at an image tag which does not exist.
+  chart:
+    needs: [image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - name: lint, package and push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          helm lint --strict deploy/helm/promptshipper \
+            --set stt.auth.existingSecret=release-stt-auth --set clip.auth.existingSecret=release-clip-auth
+          helm package deploy/helm/promptshipper --version "$version" --app-version "$version" -d dist
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          helm push "dist/promptshipper-${version}.tgz" oci://ghcr.io/zacxdev/charts
