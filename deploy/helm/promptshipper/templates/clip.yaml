@@ -122,6 +122,19 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: {{ $c.auth.tokenKey }}
+            {{- if $.Values.stt.enabled }}
+            {{- /* The STT token, read from the STT Secret, so clip refuses (422)
+                   to store a clip containing it. Only a secretKeyRef: never the
+                   value or anything derived from it outside a Secret. optional,
+                   so a missing key degrades to "not checked", never a failed pod. */}}
+            {{- $sttCtx := dict "root" $ "component" "stt" "c" $.Values.stt }}
+            - name: CLIPSTORE_REFUSE_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "promptshipper.authSecretName" $sttCtx }}
+                  key: {{ $.Values.stt.auth.tokenKey }}
+                  optional: true
+            {{- end }}
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

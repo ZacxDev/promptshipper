@@ -87,6 +87,9 @@ type clipStore interface {
 type API struct {
 	store clipStore
 	token string
+	// refuse: other credentials a clip must not contain (CLIPSTORE_REFUSE_TOKENS,
+	// already filtered by refusedTokens). Checked exactly like token.
+	refuse []string
 	// now is injected so the dedup-bump test can pin two different timestamps
 	// without sleeping.
 	now func() time.Time
@@ -99,11 +102,14 @@ type API struct {
 // NewAPI builds the API. token must already have been validated by the caller
 // (main does it at startup, loudly) — NewAPI does not re-check it, because a
 // handler is the wrong place to discover a configuration error.
-func NewAPI(store clipStore, token string, now func() time.Time) *API {
+//
+// refuse lists OTHER credentials a clip is refused for containing (see
+// refuseEnv in main.go); it is variadic so the common case reads unchanged.
+func NewAPI(store clipStore, token string, now func() time.Time, refuse ...string) *API {
 	if now == nil {
 		now = time.Now
 	}
-	return &API{store: store, token: token, now: now, changes: newChanges(),
+	return &API{store: store, token: token, refuse: refuse, now: now, changes: newChanges(),
 		waiters: make(chan struct{}, MaxWaiters)}
 }
 
@@ -282,15 +288,16 @@ func (a *API) postClip(w http.ResponseWriter, r *http.Request) {
 				strconv.Itoa(MaxDeviceBytes))
 		return
 	}
-	// 🔴 NEVER STORE THIS SERVER'S OWN CREDENTIAL. A token copied on a phone and
-	// captured as a clip would be readable back out by anything that can read
-	// clips (an agent via the MCP server). Refused 422 — not stored, never
-	// echoed, never logged. `a.token != ""` keeps an (unsupported) empty token
-	// from refusing every clip, since every string contains "".
-	if a.token != "" && (strings.Contains(req.Body, a.token) || strings.Contains(req.Device, a.token)) {
-		log.Printf("clipstore: POST /v1/clips: refused a clip containing this server's token (not stored)")
+	// 🔴 NEVER STORE A SERVER CREDENTIAL — this server's own token, or one it
+	// was told to refuse (CLIPSTORE_REFUSE_TOKENS: in a default install, the STT
+	// server's token). A token copied on a phone and captured as a clip would be
+	// readable back out by anything that can read clips (an agent via the MCP
+	// server). Refused 422 — not stored, never echoed, never logged, and the
+	// answer does not say WHICH credential matched.
+	if a.containsCredential(req.Body) || a.containsCredential(req.Device) {
+		log.Printf("clipstore: POST /v1/clips: refused a clip containing a server token (not stored)")
 		writeErr(w, http.StatusUnprocessableEntity, "contains_server_token",
-			"the clip looked like this server's own access token and was not stored")
+			"the clip looked like a server access token and was not stored")
 		return
 	}
 
@@ -459,4 +466,20 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// containsCredential reports whether s contains this server's token or any
+// refused credential. An empty needle is skipped — every string contains "" —
+// so an (unsupported) empty token cannot refuse every clip; refusedTokens never
+// yields an empty or short entry in the first place.
+func (a *API) containsCredential(s string) bool {
+	if a.token != "" && strings.Contains(s, a.token) {
+		return true
+	}
+	for _, t := range a.refuse {
+		if t != "" && strings.Contains(s, t) {
+			return true
+		}
+	}
+	return false
 }

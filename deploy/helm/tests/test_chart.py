@@ -131,6 +131,22 @@ def test_existing_secret_renders_no_secret_and_uses_its_name_and_keys():
         assert "checksum/auth" not in ann
 
 
+def test_clip_refuses_the_stt_token_read_from_the_stt_secret():
+    # clip must refuse to STORE the STT token (server/clip/README.md), so it is
+    # handed that token — by secretKeyRef to the STT Secret, never by value.
+    docs = render(*inline_tokens())
+    ref = env(docs, "clip")["CLIPSTORE_REFUSE_TOKENS"]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": one(docs, "Secret", "stt")["metadata"]["name"], "key": "STT_API_TOKEN", "optional": True}
+    # An existing STT Secret and a non-default key are followed, not assumed.
+    ref = env(render(*existing_secrets()), "clip")["CLIPSTORE_REFUSE_TOKENS"]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": "legacy-stt-secret", "key": "token", "optional": True}
+
+
+def test_clip_alone_renders_without_a_reference_to_an_stt_secret():
+    docs = render("stt.enabled=false", f"clip.auth.token={TOKEN_CLIP}")
+    assert "CLIPSTORE_REFUSE_TOKENS" not in env(docs, "clip")
+
+
 def test_existing_secret_wins_over_an_inline_token_for_both_components():
     docs = render(*inline_tokens(), *existing_secrets())
     assert of_kind(docs, "Secret") == []
