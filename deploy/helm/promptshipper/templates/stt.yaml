@@ -1,0 +1,249 @@
+{{- if .Values.stt.enabled }}
+{{- $c := .Values.stt }}
+{{- $ctx := dict "root" $ "component" "stt" "c" $c }}
+{{- $name := include "promptshipper.componentName" $ctx }}
+{{- $secret := include "promptshipper.authSecretName" $ctx }}
+{{- $claim := include "promptshipper.claimName" $ctx }}
+{{- $snipSources := 0 }}
+{{- range (list $c.snippets.existingConfigMap $c.snippets.existingSecret $c.snippets.content) }}{{ if . }}{{ $snipSources = add1 $snipSources }}{{ end }}{{ end }}
+{{- if gt $snipSources 1 }}
+{{- fail "stt.snippets: set at most one of existingConfigMap, existingSecret, content" }}
+{{- end }}
+{{- $resources := deepCopy (default dict $c.resources) }}
+{{- if $c.gpu.enabled }}
+{{- $limits := default dict $resources.limits }}
+{{- $requests := default dict $resources.requests }}
+{{- $_ := set $limits $c.gpu.resourceName $c.gpu.count }}
+{{- $_ := set $requests $c.gpu.resourceName $c.gpu.count }}
+{{- $_ := set $resources "limits" $limits }}
+{{- $_ := set $resources "requests" $requests }}
+{{- end }}
+{{- $runtimeClass := $c.runtimeClassName }}
+{{- if and (not $runtimeClass) $c.gpu.enabled }}{{ $runtimeClass = $c.gpu.runtimeClassName }}{{ end }}
+{{- if and (not $c.auth.existingSecret) $c.auth.token }}
+{{- if lt (len $c.auth.token) 24 }}
+{{- fail "stt.auth.token must be at least 24 bytes (generate one with: openssl rand -hex 32)" }}
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+type: Opaque
+stringData:
+  {{ $c.auth.tokenKey }}: {{ $c.auth.token | quote }}
+{{- end }}
+{{- if $c.snippets.content }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-snippets
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+data:
+  snippets.json: {{ $c.snippets.content | quote }}
+{{- end }}
+{{- if and $c.persistence.enabled (not $c.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+  {{- with $c.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $c.persistence.accessModes | nindent 4 }}
+  {{- with $c.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $c.persistence.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $c.replicas }}
+  revisionHistoryLimit: 5
+  {{- with $c.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "promptshipper.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "promptshipper.labels" $ctx | nindent 8 }}
+        {{- with $c.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- /* No checksum of the auth Secret here, on purpose: any deterministic
+             function of the token in the pod template is readable by anyone
+             who can `get pods`. Changing an inline token therefore does not
+             roll the pod by itself — see deploy/helm/README.md. */}}
+      {{- with $c.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $runtimeClass }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with $c.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $c.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: stt
+          image: {{ include "promptshipper.image" $ctx | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: STT_BACKEND
+              value: {{ $c.backend | quote }}
+            {{- with $c.model }}
+            - name: STT_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: HF_HOME
+              value: {{ printf "%s/hf" $c.persistence.mountPath | quote }}
+            - name: STT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $c.auth.tokenKey }}
+            {{- if $c.auth.tokensKey }}
+            - name: STT_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $c.auth.tokensKey }}
+                  optional: true
+            {{- end }}
+            {{- if $c.hfToken.existingSecret }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.hfToken.existingSecret }}
+                  key: {{ $c.hfToken.key }}
+                  optional: true
+            {{- end }}
+            {{- range $k, $v := $c.env }}
+            - name: {{ $k }}
+              value: {{ $v | toString | quote }}
+            {{- end }}
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $c.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $c.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: models
+              mountPath: {{ $c.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+            {{- if gt $snipSources 0 }}
+            - name: snippets
+              mountPath: /etc/snip
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: models
+          {{- if $claim }}
+          persistentVolumeClaim:
+            claimName: {{ $claim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if $c.snippets.existingSecret }}
+        - name: snippets
+          secret:
+            secretName: {{ $c.snippets.existingSecret }}
+            optional: true
+        {{- else if gt $snipSources 0 }}
+        - name: snippets
+          configMap:
+            name: {{ default (printf "%s-snippets" $name) $c.snippets.existingConfigMap }}
+            optional: true
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "promptshipper.serviceName" $ctx }}
+  labels:
+    {{- include "promptshipper.labels" $ctx | nindent 4 }}
+  {{- with $c.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $c.service.type }}
+  selector:
+    {{- include "promptshipper.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- include "promptshipper.ingress" $ctx }}
+{{- end }}

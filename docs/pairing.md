@@ -33,8 +33,9 @@ producer side.
 | `v` | integer | **The format version. `1` for this document.** |
 | `type` | string | always `"promptshipper-pairing"`. Lets the app reject an unrelated QR code with a clear message instead of a parse error |
 | `name` | string | a human label for the server (the producer uses the machine's hostname, reduced to `[A-Za-z0-9._-]`, ≤ 63 chars). Display only; never used to connect. May be absent in a hand-written payload — the app then shows the STT host |
-| `stt.url` | string | base URL of the STT server |
-| `stt.token` | string | bearer token for every STT request except `GET /healthz` |
+| `stt` | object | **OPTIONAL.** Absent in a clip-only payload (`./setup --pairing --for desktop`) |
+| `stt.url` | string | base URL of the STT server (required when `stt` is present) |
+| `stt.token` | string | bearer token for every STT request except `GET /healthz` (required when `stt` is present) |
 | `clip.url` | string | base URL of the clip server |
 | `clip.token` | string | bearer token for every clip request except `GET /healthz` |
 
@@ -74,8 +75,23 @@ producer side.
 * **A different `v` is rejected** with a message telling the user to update the
   app — never parsed on a best-effort basis. Any change that removes a field or
   changes a field's meaning bumps `v`.
-* Missing `stt` or `clip` (or a missing `url`/`token` inside one) is a malformed
-  payload in v1; the app must not pair half a server silently.
+* **`stt` is optional; `clip` is required.** Field names never change.
+  * The **phone app requires `stt`**: a payload without it is refused with a
+    message saying it is a desktop code (re-run `./setup --pairing`).
+  * **Clip-only consumers** (snip, the MCP server, agents) must accept a payload
+    **with or without** `stt`, must not require it, and must ignore it when
+    present — they never need the STT token.
+  * A present `stt` or `clip` with a missing `url`/`token` is malformed; never
+    pair half a server silently.
+
+## Phone vs desktop codes
+
+| | command | carries |
+|---|---|---|
+| phone (default) | `./setup --pairing` (or `--for phone`) | `stt` + `clip` |
+| desktop | `./setup --pairing --for desktop` | `clip` only — the STT token stays on the phone |
+
+Both work with `--qr-png <path>`.
 
 ## Security
 

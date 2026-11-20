@@ -476,3 +476,50 @@ def test_no_qrencode_never_pipes_the_payload_into_a_container(tree):
     r = run(tree, "--pairing", "--qr-png", str(tree[0] / "p.png"))
     assert r.returncode == 5 and "qrencode" in r.stderr
     assert not log.exists() or "alpine" not in log.read_text()
+
+
+# ------------------------------------------------------------------ --for desktop (clip-only pairing)
+
+
+def test_desktop_pairing_carries_only_the_clip_endpoint(tree):
+    run(tree, "--no-start", "--host", "100.64.1.2", "--no-qr")
+    r = run(tree, "--pairing", "--for", "desktop", "--no-qr")
+    assert r.returncode == 0, r.stderr
+    _, cfg = envfile(tree)
+    assert payload_of(r.stdout) == {
+        "v": 1,
+        "type": "promptshipper-pairing",
+        "name": "test-box",
+        "clip": {"url": "http://100.64.1.2:8139", "token": cfg["CLIPSTORE_TOKEN"]},
+    }
+    # The STT token stays on the phone: not in the payload, not anywhere in the output.
+    assert cfg["STT_API_TOKEN"] not in r.stdout + r.stderr
+
+
+def test_desktop_pairing_png_decodes_without_the_stt_token(tree, tmp_path):
+    run(tree, "--no-start", "--host", "100.64.1.2", "--no-qr")
+    link_real(tree, "qrencode")
+    zbar = shutil.which("zbarimg")
+    assert zbar, "zbarimg (zbar-tools) is required for this test (CI installs it)"
+    out = tmp_path / "desk.png"
+    r = run(tree, "--pairing", "--for", "desktop", "--qr-png", str(out))
+    assert r.returncode == 0, r.stderr
+    decoded = subprocess.run([zbar, "--raw", "-q", str(out)], capture_output=True, text=True, check=True).stdout.strip()
+    _, cfg = envfile(tree)
+    assert cfg["STT_API_TOKEN"] not in decoded
+    p = json.loads(decoded)
+    assert "stt" not in p and p["clip"]["token"] == cfg["CLIPSTORE_TOKEN"]
+    assert cfg["STT_API_TOKEN"] not in r.stdout + r.stderr and cfg["CLIPSTORE_TOKEN"] not in r.stdout + r.stderr
+
+
+def test_the_default_and_explicit_phone_payloads_are_unchanged(tree):
+    run(tree, "--no-start", "--host", "100.64.1.2", "--no-qr")
+    default = payload_of(run(tree, "--pairing", "--no-qr").stdout)
+    phone = payload_of(run(tree, "--pairing", "--for", "phone", "--no-qr").stdout)
+    assert default == phone and set(default) == {"v", "type", "name", "stt", "clip"}
+
+
+def test_an_unknown_pairing_target_is_refused(tree):
+    run(tree, "--no-start", "--host", "100.64.1.2", "--no-qr")
+    r = run(tree, "--pairing", "--for", "tablet", "--no-qr")
+    assert r.returncode == 1 and "--for must be phone or desktop" in r.stderr
