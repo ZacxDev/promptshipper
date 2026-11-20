@@ -237,8 +237,10 @@ clip:
   podLabels: {}
 
 # One NetworkPolicy per enabled component, restricting ingress to its service
-# port. `from` is a list of NetworkPolicyPeer; empty -> any source, on that
-# port only. Ingress-only: egress (e.g. the model download) is not restricted.
+# port from the peers in `from` (a list of NetworkPolicyPeer). When enabled,
+# each enabled component's `from` MUST be non-empty — an empty list would admit
+# every source and isolate nothing, so rendering fails instead.
+# Ingress-only: egress (e.g. the model download) is not restricted.
 networkPolicy:
   enabled: false
   stt:

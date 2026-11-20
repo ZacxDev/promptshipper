@@ -51,7 +51,7 @@ server/mcp/     MCP server over clip + history
 desktop/snip/   from ZacxDev/snip (MIT; history may be kept via subtree)
 deploy/compose/ docker-compose quickstart (+ gpu profile)
 deploy/helm/    chart: existingSecret / existingClaim supported
-flake.nix       packages + NixOS/home-manager modules
+flake.nix       desktop packages (snip, mcp) + home-manager module; dev shell
 AGENTS.md       agent-first onboarding entrypoint
 docs/           install, pairing, architecture, journal/
 ```

@@ -1,7 +1,7 @@
 name: chart and flake
 
 # Pull requests: lint, render and schema-validate the Helm chart, run its
-# template assertions, and `nix flake check`. A `v*` tag: package the chart
+# template assertions, and `nix flake check` (the desktop flake). A `v*` tag: package the chart
 # with the tag's version (chart version == appVersion == image tag, which
 # release.yml publishes from the same tag) and push it to GHCR as an OCI
 # artifact: oci://ghcr.io/zacxdev/charts/promptshipper.
@@ -49,7 +49,7 @@ jobs:
           done <<'SETS'
           --set stt.enabled=true
           --set stt.gpu.enabled=true --set stt.persistence.existingClaim=a --set clip.persistence.existingClaim=b
-          --set networkPolicy.enabled=true --set stt.ingress.enabled=true --set stt.ingress.hosts[0].host=stt.example.com --set clip.ingress.enabled=true --set clip.ingress.hosts[0].host=clip.example.com
+          --set networkPolicy.enabled=true --set networkPolicy.stt.from[0].podSelector.matchLabels.role=client --set networkPolicy.clip.from[0].namespaceSelector.matchLabels.team=apps --set stt.ingress.enabled=true --set stt.ingress.hosts[0].host=stt.example.com --set clip.ingress.enabled=true --set clip.ingress.hosts[0].host=clip.example.com
           --set stt.enabled=false
           --set clip.enabled=false --set stt.snippets.existingConfigMap=cat --set stt.persistence.enabled=false
           SETS
@@ -72,23 +72,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The module check is a NixOS VM test: it needs /dev/kvm usable by the
-      # build user and the `kvm`/`nixos-test` system features.
-      - name: enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            system-features = nixos-test benchmark big-parallel kvm
-      # Builds both packages and runs the clip (go test) and stt (pytest)
-      # suites plus the NixOS module VM test.
+      # Evaluates every output (today: the dev shell and formatter; the
+      # desktop packages once they land) and builds any `checks`. The server
+      # suites run in ci.yml, not here.
       - name: nix flake check
         run: nix flake check -L --show-trace
+      - name: the dev shell builds and carries its tools
+        run: nix develop --command bash -c 'go version && helm version --short && kubeconform -v && python -c "import fastapi, yaml"'
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')

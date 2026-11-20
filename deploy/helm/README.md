@@ -53,7 +53,7 @@ instead; that writes it into your values and Helm release history, so prefer
 | `<component>.service.name` / `.port` | `<fullname>-<component>`, 8000 / 8139 | set to keep an existing in-cluster DNS name |
 | `<component>.ingress.*` | off | a plain `networking.k8s.io/v1` Ingress |
 | `<component>.nodeSelector`, `.affinity`, `.tolerations`, `.resources`, `.priorityClassName` | — | as usual |
-| `networkPolicy.enabled` | `false` | one ingress policy per component, limited to its port; `networkPolicy.<component>.from` lists the allowed peers (empty = any source) |
+| `networkPolicy.enabled` | `false` | one ingress policy per component, limited to its port; `networkPolicy.<component>.from` lists the allowed peers and must be non-empty for every enabled component (rendering fails otherwise: an empty list would isolate nothing) |
 
 `clip` is always **one replica with the `Recreate` strategy**: it is a single
 SQLite writer and two processes must never open one database file. There is no

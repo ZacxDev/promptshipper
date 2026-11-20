@@ -267,19 +267,49 @@ def test_two_snippet_sources_refuse_to_render():
     assert "at most one" in err
 
 
-def test_network_policy_restricts_each_component_to_its_own_pods_and_port():
+def test_network_policy_restricts_each_component_to_its_own_pods_port_and_peers():
     docs = render(
         *inline_tokens(),
         "networkPolicy.enabled=true",
         "networkPolicy.clip.from[0].podSelector.matchLabels.role=reader",
+        "networkPolicy.stt.from[0].namespaceSelector.matchLabels.team=voice",
     )
     clip = one(docs, "NetworkPolicy", "clip")
     stt = one(docs, "NetworkPolicy", "stt")
     assert clip["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] == "clip"
+    assert stt["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] == "stt"
     assert clip["spec"]["ingress"] == [
         {"ports": [{"port": "http", "protocol": "TCP"}], "from": [{"podSelector": {"matchLabels": {"role": "reader"}}}]}
     ]
-    assert stt["spec"]["ingress"] == [{"ports": [{"port": "http", "protocol": "TCP"}]}]
+    assert stt["spec"]["ingress"] == [
+        {
+            "ports": [{"port": "http", "protocol": "TCP"}],
+            "from": [{"namespaceSelector": {"matchLabels": {"team": "voice"}}}],
+        }
+    ]
+
+
+@pytest.mark.parametrize("missing,given", [("stt", "clip"), ("clip", "stt")])
+def test_network_policy_with_an_empty_from_refuses_to_render(missing, given):
+    """An empty `from` would be a policy that admits every source: it isolates nothing."""
+    err = render(
+        *inline_tokens(),
+        "networkPolicy.enabled=true",
+        f"networkPolicy.{given}.from[0].podSelector.matchLabels.role=reader",
+        expect_fail=True,
+    )
+    assert f"networkPolicy.{missing}.from" in err
+    assert "isolates nothing" in err
+
+
+def test_network_policy_from_is_not_required_for_a_disabled_component():
+    docs = render(
+        f"clip.auth.token={TOKEN_CLIP}",
+        "stt.enabled=false",
+        "networkPolicy.enabled=true",
+        "networkPolicy.clip.from[0].podSelector.matchLabels.role=reader",
+    )
+    assert [d["metadata"]["labels"]["app.kubernetes.io/component"] for d in of_kind(docs, "NetworkPolicy")] == ["clip"]
 
 
 def test_ingress_points_at_the_component_service():
