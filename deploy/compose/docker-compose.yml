@@ -97,6 +97,9 @@ services:
     environment:
       # Empty or short -> clipstore refuses to start (exit 2), never runs open.
       CLIPSTORE_TOKEN: ${CLIPSTORE_TOKEN:-}
+      # The STT token too: clip refuses (422) to store a clip containing it, as
+      # it does its own. Blank (no STT token) = nothing extra is refused.
+      CLIPSTORE_REFUSE_TOKENS: ${STT_API_TOKEN:-}
     ports:
       - "${BIND:-127.0.0.1}:${CLIP_PORT:-8139}:8139"
     volumes:

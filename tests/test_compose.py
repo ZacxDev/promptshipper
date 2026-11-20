@@ -67,3 +67,17 @@ def test_ports_are_published_on_exactly_bind(tmp_path, bind):
     for svc, port in (("stt", "8118"), ("stt-gpu", "8118"), ("clip", "8139")):
         (p,) = svcs[svc]["ports"]
         assert (p["host_ip"], str(p["published"])) == (bind, port), (svc, p)
+
+
+def test_clip_is_handed_the_stt_token_to_refuse(tmp_path):
+    # server/clip/README.md: clip refuses (422) to store a clip containing the STT
+    # token, which it learns from CLIPSTORE_REFUSE_TOKENS. Distinct fixture values,
+    # so swapping the two tokens cannot pass.
+    stt, clip = "s" * 40, "c" * 40
+    env_file = tmp_path / ".env"
+    env_file.write_text(EXAMPLE.read_text().replace("STT_API_TOKEN=\n", f"STT_API_TOKEN={stt}\n")
+                        .replace("CLIPSTORE_TOKEN=\n", f"CLIPSTORE_TOKEN={clip}\n"))
+    env = config(env_file)["clip"]["environment"]
+    assert (env["CLIPSTORE_TOKEN"], env["CLIPSTORE_REFUSE_TOKENS"]) == (clip, stt)
+    # No STT token -> blank -> clipstore checks nothing extra (and still starts).
+    assert config(EXAMPLE)["clip"]["environment"]["CLIPSTORE_REFUSE_TOKENS"] == ""
