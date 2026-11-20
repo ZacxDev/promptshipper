@@ -32,16 +32,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import backends
 from backends import BackendRequestError, BackendUnavailable, Transcript
+from backends.base import env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("stt")
 
-MAX_AUDIO_SECONDS = float(os.environ.get("STT_MAX_AUDIO_SECONDS", "3600"))
+MAX_AUDIO_SECONDS = float(env("STT_MAX_AUDIO_SECONDS", "3600"))
+# The largest upload body accepted, checked BEFORE the body is read (see
+# UploadGate). Default: MAX_AUDIO_SECONDS of 16 kHz mono 16-bit PCM — the
+# largest the format this server decodes to needs — plus 1 MiB for the
+# multipart envelope. Compressed uploads are ~10x smaller than that.
+MAX_UPLOAD_BYTES = int(env("STT_MAX_UPLOAD_BYTES", str(int(MAX_AUDIO_SECONDS * 32000) + (1 << 20))))
 FFMPEG_TIMEOUT = 120.0
 SAMPLE_RATE = 16000
 
 # 🔴 AN UNKNOWN STT_BACKEND REFUSES BOOT, at import time, naming the valid set.
-BACKEND = backends.create(os.environ.get("STT_BACKEND", backends.DEFAULT_BACKEND))
+BACKEND = backends.create(env("STT_BACKEND", backends.DEFAULT_BACKEND))
 
 
 def _optional_float(name: str, default: str):
@@ -316,19 +322,31 @@ def snip_catalog():
 
 
 # ---------------------------------------------------------------------------
-# bearer tokens: one default token plus any number of NAMED, revocable ones
+# bearer tokens: one legacy token plus any number of NAMED, revocable ones
 # ---------------------------------------------------------------------------
 #
 # STT_API_TOKEN   one token (what ./setup generates). Logged as caller "default".
-# STT_API_TOKENS  comma-separated `name:token` entries, accepted IN ADDITION.
-#                 Everything after the FIRST colon is the token. Revoking one
-#                 caller = deleting its entry and restarting.
+# STT_API_TOKENS  comma-separated, accepted IN ADDITION:
+#                   name:token          internal scope
+#                   name:internal:token internal scope, spelled out
+#                   name:public:token   also accepted through a "public entry"
+#                 Revoking one caller = deleting its entry and restarting.
+#
+# THE PUBLIC ENTRY (advanced, off unless you build it): a reverse proxy that
+# exposes this service more widely can SET the header `X-STT-Entry` on every
+# request it forwards. A request carrying that header (any value, any number of
+# times) is accepted only with a PUBLIC-scoped token. The header can only ever
+# NARROW what a token may do, which is why the app may trust it at all.
 #
 # 🔴 A MALFORMED STT_API_TOKENS REFUSES BOOT; it is never partly applied.
 # ⚠ ZERO TOKENS IS NOT A BOOT FAILURE: /healthz stays up and every
 # authenticated route answers 503 naming STT_API_TOKEN — closed, not open.
 LEGACY_TOKEN_NAME = "default"
 TOKEN_NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
+SCOPE_INTERNAL = "internal"
+SCOPE_PUBLIC = "public"
+TOKEN_SCOPES = frozenset({SCOPE_INTERNAL, SCOPE_PUBLIC})
+ENTRY_HEADER = "x-stt-entry"
 
 
 class TokenConfigError(ValueError):
@@ -337,52 +355,61 @@ class TokenConfigError(ValueError):
 
 
 def parse_tokens(legacy: str, named: str) -> tuple:
-    """`((name, sha256(token)), ...)`, or raise TokenConfigError.
+    """`((name, scope, sha256(token)), ...)`, or raise TokenConfigError.
 
     Only DIGESTS are kept, so comparisons are equal-length and no plaintext
-    token lives in the table.
+    token lives in the table. With one colon an entry is `name:token`; with two
+    or more the second segment must be a scope (`name:internal:a:b` -> `a:b`).
     """
     entries = []
     if legacy:
-        entries.append((LEGACY_TOKEN_NAME, legacy))
+        entries.append((LEGACY_TOKEN_NAME, SCOPE_INTERNAL, legacy))
     if named.strip():
         for i, raw in enumerate(named.split(","), start=1):
             entry = raw.strip()
             if not entry:
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} is empty (stray comma?)")
-            name, sep, token = entry.partition(":")
+            name, sep, rest = entry.partition(":")
             if not sep:
-                raise TokenConfigError(f"STT_API_TOKENS entry {i} is not `name:token`")
+                raise TokenConfigError(f"STT_API_TOKENS entry {i} is not `name[:scope]:token`")
             if not TOKEN_NAME_RE.fullmatch(name):
                 raise TokenConfigError(
                     f"STT_API_TOKENS entry {i} has an invalid name (want [a-z0-9-]{{1,32}})"
+                )
+            scope, sep, token = rest.partition(":")
+            if not sep:
+                scope, token = SCOPE_INTERNAL, rest
+            elif scope not in TOKEN_SCOPES:
+                raise TokenConfigError(
+                    f"STT_API_TOKENS entry {i} ({name}) has an unknown scope "
+                    f"(want one of {', '.join(sorted(TOKEN_SCOPES))})"
                 )
             if not token:
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} ({name}) has an empty token")
             if any(c.isspace() for c in token):
                 raise TokenConfigError(f"STT_API_TOKENS entry {i} ({name}) has whitespace in its token")
-            entries.append((name, token))
-    names = [n for n, _ in entries]
+            entries.append((name, scope, token))
+    names = [n for n, _, _ in entries]
     dup_names = sorted({n for n in names if names.count(n) > 1})
     if dup_names:
         raise TokenConfigError(f"duplicate token name(s): {', '.join(dup_names)}")
     by_token = {}
-    for name, token in entries:
+    for name, _, token in entries:
         by_token.setdefault(token, []).append(name)
     shared = sorted("+".join(ns) for ns in by_token.values() if len(ns) > 1)
     if shared:
         raise TokenConfigError(f"the same token is configured under several names: {', '.join(shared)}")
-    return tuple((name, hashlib.sha256(token.encode()).digest()) for name, token in entries)
+    return tuple((name, scope, hashlib.sha256(token.encode()).digest()) for name, scope, token in entries)
 
 
 def match_token(presented: str, tokens: tuple):
-    """The NAME of the matching entry, else None. No early exit: every digest
-    is compared on every call."""
+    """`(name, scope)` of the matching entry, else None. No early exit: every
+    digest is compared on every call."""
     digest = hashlib.sha256(presented.encode("utf-8", "surrogatepass")).digest()
     matched = None
-    for name, want in tokens:
+    for name, scope, want in tokens:
         if hmac.compare_digest(digest, want):
-            matched = name
+            matched = (name, scope)
     return matched
 
 
@@ -395,17 +422,124 @@ bearer = HTTPBearer(auto_error=False)
 NO_TOKEN_DETAIL = "server has no STT_API_TOKEN configured"
 
 
-def require_token(request: Request, creds: HTTPAuthorizationCredentials = Depends(bearer)):
-    """Authenticate; return the caller's NAME. The name is logged, the token never."""
+def bearer_credential(authorization: str | None) -> str | None:
+    """The credential of an `Authorization: Bearer <x>` header, else None —
+    the same reading FastAPI's HTTPBearer makes, so the upload gate and the
+    route dependency cannot disagree about who sent a token."""
+    if not authorization:
+        return None
+    scheme, _, credential = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not credential:
+        return None
+    return credential
+
+
+def authenticate(credential: str | None, public_entry: bool, method: str, path: str) -> str:
+    """THE one auth rule. Return the caller's NAME, or raise HTTPException.
+
+    Called by `require_token` (every authenticated route) AND by `UploadGate`
+    (before an upload body is read), so the 401/403/503 semantics are one code
+    path. The name is logged, the token never.
+    """
     if not TOKENS:
         raise HTTPException(503, NO_TOKEN_DETAIL)
-    name = None if creds is None else match_token(creds.credentials, TOKENS)
-    if name is None:
+    hit = None if credential is None else match_token(credential, TOKENS)
+    if hit is None:
         log.warning("auth refused (%s bearer) %s %s",
-                    "missing" if creds is None else "invalid", request.method, request.url.path)
+                    "missing" if credential is None else "invalid", method, path)
         raise HTTPException(401, "invalid or missing bearer token")
-    log.info("auth caller=%s %s %s", name, request.method, request.url.path)
+    name, scope = hit
+    if public_entry and scope != SCOPE_PUBLIC:
+        log.warning("auth refused (scope) caller=%s via public entry %s %s", name, method, path)
+        raise HTTPException(403, "this token is not permitted through the public entry")
+    log.info("auth caller=%s%s %s %s", name, " via public entry" if public_entry else "", method, path)
     return name
+
+
+def require_token(request: Request, creds: HTTPAuthorizationCredentials = Depends(bearer)):
+    # getlist, never get: `get` returns only the FIRST occurrence, so an empty
+    # header ahead of the proxy's would read as internal.
+    public = len(request.headers.getlist(ENTRY_HEADER)) > 0
+    return authenticate(None if creds is None else creds.credentials, public,
+                        request.method, request.url.path)
+
+
+# ---------------------------------------------------------------------------
+# the upload gate
+# ---------------------------------------------------------------------------
+
+UPLOAD_PATH = "/v1/audio/transcriptions"
+
+
+class UploadGate:
+    """ASGI middleware: authenticate and size-cap an upload BEFORE its body is read.
+
+    🔴 WHY A MIDDLEWARE AND NOT THE DEPENDENCY. FastAPI parses a multipart body —
+    spooling it to /tmp on the container's writable layer — before any `Depends`
+    runs, so `require_token` alone let an UNAUTHENTICATED caller write an upload
+    of any size to disk. This runs first and reads only the headers.
+
+    * Auth: `authenticate()`, the same function the dependency calls, so the
+      status codes and messages are identical. The dependency still runs after
+      it, unchanged.
+    * Declared size: a Content-Length above MAX_UPLOAD_BYTES is 413 at once.
+    * Streamed size: for a chunked body, `receive` is counted and the request is
+      cut at MAX_UPLOAD_BYTES — this answers 413 and tells the app the client
+      disconnected; anything the app tries to send afterwards is dropped.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != UPLOAD_PATH:
+            return await self.inner(scope, receive, send)
+        headers = [(k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in scope["headers"]]
+        auth = next((v for k, v in headers if k == "authorization"), None)
+        public = any(k == ENTRY_HEADER for k, _ in headers)
+        try:
+            authenticate(bearer_credential(auth), public, "POST", UPLOAD_PATH)
+        except HTTPException as e:
+            return await _reply(send, e.status_code, e.detail)
+        declared = next((v for k, v in headers if k == "content-length"), None)
+        if declared is not None and declared.strip().isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+            return await _reply(send, 413, _too_large())
+
+        seen = {"bytes": 0, "cut": False}
+
+        async def counted_receive():
+            msg = await receive()
+            if msg["type"] == "http.request":
+                seen["bytes"] += len(msg.get("body", b""))
+                if seen["bytes"] > MAX_UPLOAD_BYTES and not seen["cut"]:
+                    seen["cut"] = True
+                    await _reply(send, 413, _too_large())
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def guarded_send(msg):
+            if not seen["cut"]:
+                await send(msg)
+
+        try:
+            await self.inner(scope, counted_receive, guarded_send)
+        except Exception:
+            if not seen["cut"]:
+                raise
+
+
+def _too_large() -> str:
+    return (f"upload too large: more than {MAX_UPLOAD_BYTES} bytes "
+            f"(STT_MAX_UPLOAD_BYTES; audio is capped at {MAX_AUDIO_SECONDS:.0f}s anyway)")
+
+
+async def _reply(send, status: int, detail: str):
+    body = json.dumps({"detail": detail}).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode()),
+                            (b"connection", b"close")]})
+    await send({"type": "http.response.body", "body": body})
 
 
 # ---------------------------------------------------------------------------
@@ -421,20 +555,22 @@ async def lifespan(app: FastAPI):
 
 # No /docs, /redoc or /openapi.json: a machine API does not need a public map.
 app = FastAPI(title="promptshipper-stt", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(UploadGate)
 
 
 @app.get("/healthz")
 async def healthz():
     """🔴 `async def` ON PURPOSE: a sync handler would queue in the same
     threadpool `transcribe` holds for a whole decode, so a retry storm could
-    starve the probe and get a working server restarted. Reads state only."""
+    starve the probe and get a working server restarted. Reads state only.
+    The ONE unauthenticated route."""
     if not BACKEND.ready:
         raise HTTPException(503, "model not loaded yet")
     return {"ok": True, "backend": BACKEND.name, "device": BACKEND.device}
 
 
 @app.get("/")
-async def root():
+async def root(_=Depends(require_token)):
     return {
         "service": "promptshipper-stt",
         "backend": BACKEND.name,
