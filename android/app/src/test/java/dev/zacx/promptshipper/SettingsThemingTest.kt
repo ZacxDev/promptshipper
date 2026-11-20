@@ -132,6 +132,10 @@ class SettingsThemingTest {
         // controls that destroy something. The ledger GREW deliberately again.
         "clip_save" to "@drawable/outline_button_bg",
         "clip_clear_token" to "@drawable/destructive_button_bg",
+        // The opt-in dictation feed (DictationClipFeed). A framework CheckBox,
+        // bare for stt_remote_enabled's stated reason. The ledger GREW
+        // deliberately.
+        "clip_feed_dictations" to null,
     )
 
     /**
@@ -334,11 +338,13 @@ class SettingsThemingTest {
         // controls because its label is deliberately the error colour.
         // 🔴 RE-DERIVED at 11 by the history export and import buttons, both
         // outlined, non-destructive, text-bearing — they join the count.
+        // 🔴 RE-DERIVED at 12 by @id/clip_feed_dictations, the second
+        // checkbox (the opt-in dictation feed): text-bearing, so it joins.
         assertEquals(
-            "expected to examine the checkbox, all FOUR fields and all SIX " +
+            "expected to examine both checkboxes, all FOUR fields and all SIX " +
                 "outlined buttons (STT Save, Test, Export history, Import " +
                 "history, Import snippets, clipboard Save); examined $examined",
-            11,
+            12,
             examined.size
         )
     }

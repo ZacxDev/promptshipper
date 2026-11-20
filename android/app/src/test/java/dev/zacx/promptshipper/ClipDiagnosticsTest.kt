@@ -141,7 +141,7 @@ class ClipDiagnosticsTest {
     /** An in-memory queue, so a readout test is not a test of a file. */
     private class FakeOutbox(private val depth: Int, private val throws: Boolean = false) :
         ClipOutbox {
-        override fun append(body: String): Long = 0L
+        override fun append(body: String, device: String?): Long = 0L
         override fun pending(): List<ClipOutbox.Pending> {
             if (throws) throw ClipOutbox.Failed("the queue file is unreadable")
             return (1..depth).map { ClipOutbox.Pending(it.toLong(), "body $it") }

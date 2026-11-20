@@ -818,4 +818,6 @@
     <string name="pairing_confirm">Pair</string>
     <string name="pairing_failed">Pairing failed (%1$s) — nothing was changed. Try again.</string>
     <string name="pairing_done">Paired with %1$s</string>
+    <!-- DictationClipFeed: opt-in, default off. -->
+    <string name="clip_feed_dictations_label">Send each dictation to my clip feed — every finished transcript is also queued to your clip server, where your agents can read it. Off: nothing about a dictation leaves the phone except the transcription upload.</string>
 </resources>

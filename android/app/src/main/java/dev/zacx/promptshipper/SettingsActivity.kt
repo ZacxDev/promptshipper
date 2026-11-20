@@ -39,6 +39,7 @@ class SettingsActivity : Activity() {
     private lateinit var tokenField: EditText
     private lateinit var statusLine: TextView
     private lateinit var remoteToggle: CheckBox
+    private lateinit var feedToggle: CheckBox
     private lateinit var languageSpinner: Spinner
     private lateinit var historyUsage: TextView
     private lateinit var historyTransfer: TextView
@@ -122,12 +123,14 @@ class SettingsActivity : Activity() {
         clipSettings = ClipSettings.create(this)
         clipUrlField = findViewById(R.id.clip_url)
         clipTokenField = findViewById(R.id.clip_token)
+        feedToggle = findViewById(R.id.clip_feed_dictations)
 
         urlField.setText(settings.baseUrl)
         remoteToggle.isChecked = settings.remoteEnabled
         bindLanguageSpinner()
         renderTokenState()
         clipUrlField.setText(clipSettings.baseUrl)
+        feedToggle.isChecked = clipSettings.feedDictations
         renderClipTokenState()
 
         findViewById<Button>(R.id.stt_save).setOnClickListener { save() }
@@ -346,6 +349,7 @@ class SettingsActivity : Activity() {
 
     private fun saveClip(): Boolean {
         clipSettings.baseUrl = clipUrlField.text.toString()
+        clipSettings.feedDictations = feedToggle.isChecked
         val typed = clipTokenField.text.toString()
         if (typed.isNotBlank()) {
             try {

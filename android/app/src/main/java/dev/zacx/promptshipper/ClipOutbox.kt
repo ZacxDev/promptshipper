@@ -64,10 +64,13 @@ interface ClipOutbox {
      * next act is to tell the user the capture was taken, and it may only do
      * that if this returned.
      *
+     * @param device the attribution this item is posted with, or null for the
+     *   flusher's own (the phone's model). `DictationClipFeed` tags its items
+     *   so a reader of the feed can tell a dictation from a capture.
      * @throws Failed when the queue could not be written. The caller must say
      *   so rather than toasting success.
      */
-    fun append(body: String): Long
+    fun append(body: String, device: String? = null): Long
 
     /**
      * Everything still waiting, **oldest first**.
@@ -125,7 +128,7 @@ interface ClipOutbox {
      * capture, so a parse that rejected or skipped an old row would destroy
      * captures on upgrade.
      */
-    data class Pending(val id: Long, val body: String)
+    data class Pending(val id: Long, val body: String, val device: String? = null)
 
     /** The queue could not be written, or could not be read. */
     open class Failed(reason: String, cause: Throwable? = null) : Exception(reason, cause)
@@ -181,7 +184,7 @@ class ClipOutboxStore internal constructor(
     private val file: File get() = File(dir, FILE)
     private val temp: File get() = File(dir, "$FILE$TMP_SUFFIX")
 
-    override fun append(body: String): Long = synchronized(LOCK) {
+    override fun append(body: String, device: String?): Long = synchronized(LOCK) {
         if (body.isEmpty()) {
             // 🔴 Refused rather than queued. The service answers an empty body
             // with a 400 (`error: empty_body`, measured), so queuing one would
@@ -199,7 +202,7 @@ class ClipOutboxStore internal constructor(
         }
         val state = readState()
         val id = state.nextId
-        val items = state.items + ClipOutbox.Pending(id, body)
+        val items = state.items + ClipOutbox.Pending(id, body, device?.takeIf { it.isNotBlank() })
         write(nextId = id + 1, items = items)
         id
     }
@@ -261,7 +264,9 @@ class ClipOutboxStore internal constructor(
             // skipped. See [ClipOutbox.Pending]: that is upgrade safety for the
             // only copy of the user's capture, not tolerance for its own sake.
             if (id > 0L && body.isNotEmpty()) {
-                items += ClipOutbox.Pending(id, body)
+                // `device` is optional: rows from earlier builds have none.
+                val device = row.optString(ClipJson.KEY_DEVICE, "").takeIf { it.isNotBlank() }
+                items += ClipOutbox.Pending(id, body, device)
             }
         }
         val stored = root.optLong(KEY_NEXT_ID, 0L)

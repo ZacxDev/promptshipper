@@ -44,6 +44,7 @@ class PairingActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var status: TextView
     private lateinit var confirm: Button
+    private lateinit var feed: android.widget.CheckBox
     private var parsed: PairingPayload.Pairing? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,6 +53,11 @@ class PairingActivity : Activity() {
         input = findViewById(R.id.pairing_input)
         status = findViewById(R.id.pairing_status)
         confirm = findViewById(R.id.pair_confirm)
+        feed = findViewById(R.id.pairing_feed_dictations)
+        // The current setting, which is OFF unless the user turned it on: on
+        // first run the offer is unchecked, and a re-pair does not silently
+        // turn off a feed the user already chose.
+        feed.isChecked = ClipSettings.create(this).feedDictations
 
         findViewById<Button>(R.id.pairing_scan).setOnClickListener { scan() }
         findViewById<Button>(R.id.pairing_paste).setOnClickListener { paste() }
@@ -140,6 +146,7 @@ class PairingActivity : Activity() {
             status.text = getString(R.string.pairing_failed, e.javaClass.simpleName)
             return
         }
+        ClipSettings.create(this).feedDictations = feed.isChecked
         val pasted = input.text.toString()
         input.setText("")
         clearClipboardIfItHolds(pasted)

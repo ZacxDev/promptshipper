@@ -167,7 +167,8 @@ object ClipJson {
     /**
      * The local outbox envelope's `items` array. See [ClipOutboxStore].
      *
-     * 🔴 `id` and `body`, and nothing else. A `created_at` carrying
+     * 🔴 `id`, `body`, and `device` only when the item carries its own tag
+     * (`DictationClipFeed`). A `created_at` carrying
      * `ClipOutbox.Pending.capturedAtMs` was written here and read back by
      * nothing (D5); the reader only ever looked at these two keys, so dropping
      * the write is compatible in both directions — an old file still parses,
@@ -176,11 +177,12 @@ object ClipJson {
     internal fun toJsonArray(items: List<ClipOutbox.Pending>): JSONArray {
         val array = JSONArray()
         for (item in items) {
-            array.put(
-                JSONObject()
-                    .put(KEY_ID, item.id)
-                    .put(KEY_BODY, item.body)
-            )
+            val row = JSONObject()
+                .put(KEY_ID, item.id)
+                .put(KEY_BODY, item.body)
+            // Only when set: an untagged row is written exactly as before.
+            item.device?.let { row.put(KEY_DEVICE, it) }
+            array.put(row)
         }
         return array
     }

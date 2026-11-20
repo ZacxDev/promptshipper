@@ -88,6 +88,9 @@ class ClipSeamLedgerTest {
         // handed a `ClipOutbox` rather than constructing one, which is what
         // keeps it Android-free and unit-testable.
         "DebugClipConfigReceiver.kt",
+        // The opt-in dictation feed — the queue's SECOND writer, added
+        // deliberately; see [outboxWriters]. (Sorted: the scan sorts by name.)
+        "DictationClipFeed.kt",
     )
 
     @Test
@@ -108,6 +111,58 @@ class ClipSeamLedgerTest {
             clipHttpConstructors,
             writers,
         )
+    }
+
+    /**
+     * The only files that may APPEND to the capture queue — exactly two.
+     *
+     * `CaptureActivity.kt` (the share-sheet / toolbar capture) was the sole
+     * writer. `DictationClipFeed.kt` is the second, by operator decision: the
+     * opt-in "send each dictation to my clip feed", which is OFF by default and
+     * gated inside that file. A THIRD is a new way for text to leave the phone
+     * that nobody opted into — the reason this is a ledger and not a count.
+     */
+    private val outboxWriters = listOf(
+        "CaptureActivity.kt",
+        "DictationClipFeed.kt",
+    )
+
+    /**
+     * An `append(` whose receiver is an outbox: `outbox().append(`,
+     * `(outbox ?: ClipOutboxStore(this)).append(`, `store.append(` on a
+     * ClipOutbox would need a name with "outbox" in it — every production
+     * spelling does, and [theWriterScanSeesBothSpellingsAndNotAStringBuilder]
+     * holds it to that.
+     */
+    private val outboxAppend =
+        Regex("""(?i)outbox[A-Za-z]*(\(\))?(\s*\?:\s*ClipOutboxStore\([^)]*\))?\)?\s*\.\s*append\s*\(""")
+
+    @Test
+    fun onlyTheDeclaredFilesAppendToTheCaptureQueue() {
+        val writers = sourceFiles()
+            .filter { outboxAppend.containsMatchIn(normalise(it.readText())) }
+            .map { it.name }
+            .sorted()
+        assertEquals(
+            "🔴 the set of files that APPEND to the capture queue changed. It " +
+                "must be exactly CaptureActivity (the user's explicit capture) " +
+                "and DictationClipFeed (the opt-in dictation feed, default " +
+                "off). A new writer is text leaving the phone that nobody " +
+                "opted into; a missing one is a feature that silently stopped.",
+            outboxWriters,
+            writers,
+        )
+    }
+
+    @Test
+    fun theWriterScanSeesBothSpellingsAndNotAStringBuilder() {
+        assertTrue(outboxAppend.containsMatchIn(
+            normalise("x { (outbox ?: ClipOutboxStore(this)).append(text.toString()) }")))
+        assertTrue(outboxAppend.containsMatchIn(normalise("x { outbox().append(body, DEVICE) }")))
+        assertTrue(outboxAppend.containsMatchIn(normalise("x { outbox.append(body) }")))
+        assertFalse(outboxAppend.containsMatchIn(normalise("x { StringBuilder().append(body) }")))
+        assertFalse(outboxAppend.containsMatchIn(
+            normalise("override fun append(body: String, device: String?): Long")))
     }
 
     @Test

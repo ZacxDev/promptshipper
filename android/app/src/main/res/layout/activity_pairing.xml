@@ -96,6 +96,18 @@
             android:lineSpacingExtra="3dp"
             android:textColor="@color/dicta_on_surface_variant" />
 
+        <!-- Offered, never pre-checked: see DictationClipFeed. -->
+        <CheckBox
+            android:id="@+id/pairing_feed_dictations"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:gravity="center_vertical"
+            android:textSize="14sp"
+            android:textColor="@color/dicta_on_surface"
+            android:text="@string/clip_feed_dictations_label" />
+
         <Button
             android:id="@+id/pair_confirm"
             android:layout_width="wrap_content"

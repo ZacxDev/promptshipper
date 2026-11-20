@@ -35,7 +35,7 @@ class ClipFlusherTest {
 
         init { nextId = items.size + 1L }
 
-        override fun append(body: String): Long {
+        override fun append(body: String, device: String?): Long {
             val id = nextId++
             items += ClipOutbox.Pending(id, body)
             return id

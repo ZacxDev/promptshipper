@@ -51,7 +51,7 @@ class CaptureActivityTest {
     private class FakeOutbox(private val failWith: String? = null) : ClipOutbox {
         val appended = mutableListOf<ClipOutbox.Pending>()
         private var next = 1L
-        override fun append(body: String): Long {
+        override fun append(body: String, device: String?): Long {
             failWith?.let { throw ClipOutbox.Failed(it) }
             val id = next++
             appended += ClipOutbox.Pending(id, body)

@@ -97,6 +97,12 @@ class DictationSession(
      * `destroy()` *calls* this at all; see the note on [runHistoryCleanup].
      */
     private val historyCleanup: (() -> Unit) -> Unit = { runHistoryCleanup(it) },
+    /**
+     * The opt-in "send each dictation to my clip feed" ([DictationClipFeed]).
+     * Offered the final text exactly once per dictation; it decides, from the
+     * setting, whether anything is queued.
+     */
+    private val clipFeed: DictationClipFeed = DictationClipFeed.create(context),
 ) {
 
     interface Callbacks {
@@ -751,6 +757,9 @@ class DictationSession(
                     // the text the user actually saw, which is this one — the
                     // local first guess that `add` filed is now stale.
                     updateHistoryText(historyId, text, fromRemote = true)
+                    // The final text of this dictation; the feed's own
+                    // setting decides whether it goes anywhere.
+                    clipFeed.offer(text)
                     postToMain {
                         callbacks.onTranscript(
                             text, fromRemote = true, isFinal = true
@@ -768,6 +777,7 @@ class DictationSession(
                     // nothing.
                     if (localTranscript.isNotBlank()) {
                         updateHistoryText(historyId, localTranscript, fromRemote = false)
+                        clipFeed.offer(localTranscript)
                     }
                     postToMain {
                         callbacks.onStatus(status)

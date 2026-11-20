@@ -80,6 +80,18 @@ class ClipSettings(
      */
     val tokenIsUnusable: Boolean get() = !tokens.hasToken && tokens.hasCiphertext
 
+    /**
+     * "Send each dictation to my clip feed". 🔴 **Default OFF**: dictation
+     * reaching the clip server — and through it the user's agents — is opt-in.
+     * Read by [DictationClipFeed]; set from Settings and from the pairing
+     * confirm screen, where it is offered unchecked.
+     */
+    var feedDictations: Boolean
+        get() = prefs.getBoolean(KEY_FEED_DICTATIONS, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_FEED_DICTATIONS, value).apply()
+        }
+
     companion object {
 
         /**
@@ -91,6 +103,8 @@ class ClipSettings(
             "the shared-clipboard token is stored but could not be decrypted"
 
         const val KEY_BASE_URL: String = "clip_base_url"
+
+        const val KEY_FEED_DICTATIONS: String = "clip_feed_dictations"
 
         /**
          * 🔴 Distinct from [TokenStore.KEY_TOKEN_CIPHERTEXT] — see the class

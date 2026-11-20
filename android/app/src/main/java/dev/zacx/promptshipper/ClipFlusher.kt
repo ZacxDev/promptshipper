@@ -151,7 +151,7 @@ class ClipFlusher(
             if (index >= max) {
                 return Report(stored, dropped, kept = queue.size - index)
             }
-            when (post(item.body, device)) {
+            when (post(item.body, item.device ?: device)) {
                 is ClipPost.Stored -> {
                     outbox.remove(item.id)
                     stored++
