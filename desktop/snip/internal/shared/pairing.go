@@ -127,7 +127,7 @@ func validateEndpoint(path, name string, e *pairingEndpoint) error {
 		return fmt.Errorf("%s: %s.token is missing", path, name)
 	}
 	if err := validateBaseURL(*e.URL); err != nil {
-		return fmt.Errorf("%s: %s.url %q %v", path, name, *e.URL, err)
+		return fmt.Errorf("%s: %s.url %q %v", path, name, redactURL(*e.URL), err)
 	}
 	if err := validatePairingToken(*e.Token); err != nil {
 		return fmt.Errorf("%s: %s.token %v", path, name, err)

@@ -52,6 +52,23 @@ cd promptshipper/desktop/snip
 go build -o snip ./cmd/snip
 ```
 
+### Upgrading from ZacxDev/snip
+
+snip used to live at `github.com/ZacxDev/snip` (0.2.0 and earlier). Two
+behaviours changed in 0.3.0, and both can look like breakage:
+
+- **Fire telemetry is off unless you turn it on.** Earlier versions always
+  appended fire rows to the activity spool. Now nothing is written unless
+  `SNIP_ACTIVITY_SPOOL=1` is set in snip's environment (your launcher or WM
+  keybind wrapper). `ACTIVITY_SPOOL_DIR` alone no longer turns it on.
+- **`shared.env` with a plain `http://` hostname is refused.** The shared
+  clipboard only sends its token over `http://` to `localhost` or a private IP
+  address (see [Configuring it](#configuring-it)); a hostname needs `https://`.
+  The old README's own example (`http://your-store.example:8080`) is exactly
+  the case. You see it at once, as a config error naming the file — change
+  `SNIP_SHARED_URL` to the server's IP address (e.g. its Tailscale `100.x`
+  address), or put the clip server behind https.
+
 Requires Go 1.26+. Runtime prerequisites (Linux/X11): `xclip`, `xdotool`;
 optionally `i3` (`i3-msg` is used to refocus when available, `xdotool`
 otherwise) and `dunstify` for failure toasts.

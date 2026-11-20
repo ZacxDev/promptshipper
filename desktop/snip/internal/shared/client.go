@@ -174,11 +174,11 @@ func (c *Client) get(u string) ([]byte, error) {
 // private IP is refused before the token is put on the wire.
 func (c *Client) do(method, u string) ([]byte, int, error) {
 	if why := CleartextRejection(c.cfg.URL); why != "" {
-		return nil, 0, fmt.Errorf("refusing the clip store URL %q: %s", c.cfg.URL, why)
+		return nil, 0, fmt.Errorf("refusing the clip store URL %q: %s", redactURL(c.cfg.URL), why)
 	}
 	req, err := http.NewRequest(method, u, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("bad clip store URL %q: %v", c.cfg.URL, err)
+		return nil, 0, fmt.Errorf("bad clip store URL %q: %v", redactURL(c.cfg.URL), err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
 	req.Header.Set("Accept", "application/json")

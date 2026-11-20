@@ -195,5 +195,11 @@ func (c Config) Validate(path string) error {
 	if len(c.Token) < MinTokenLen {
 		return fmt.Errorf("%s: %s is shorter than %d characters", path, KeyToken, MinTokenLen)
 	}
+	// The cleartext rule, reported at LOAD so the operator reads it as a config
+	// error naming the file, not as a fetch failure at picker-open. Client.do
+	// still enforces it on every request; this is the early, actionable report.
+	if why := CleartextRejection(c.URL); why != "" {
+		return fmt.Errorf("%s: %s %q: %s", path, KeyURL, redactURL(c.URL), why)
+	}
 	return nil
 }

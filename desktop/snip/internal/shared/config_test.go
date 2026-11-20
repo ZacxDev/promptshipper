@@ -148,3 +148,26 @@ func TestEnvPathPrecedence(t *testing.T) {
 		t.Errorf("home default = %q, want it to end in /.config/snip/shared.env", got)
 	}
 }
+
+// 🔴 THE CLEARTEXT RULE IS REPORTED AT LOAD for an env file, naming the file
+// and the key, with the remedy — an upgrading ZacxDev/snip user whose
+// shared.env holds an http:// hostname reads it as a config error, not as a
+// fetch failure at picker-open. Literal expected text.
+func TestAnEnvFileWithAPublicHTTPURLFailsAtLoad(t *testing.T) {
+	path := writeEnv(t, "SNIP_SHARED_URL=http://your-store.example:8080\nSNIP_SHARED_TOKEN=abcdefghijkl\n")
+	_, err := Load()
+	want := path + `: SNIP_SHARED_URL "http://your-store.example:8080": plain http:// is only allowed to a private IP address ` +
+		`(10.x, 172.16–31.x, 192.168.x, 100.64–127.x, 127.x, ::1, fd00::/8) — ` +
+		`use an IP address in one of those ranges, or https://, instead of http://your-store.example`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v\nwant  %s", err, want)
+	}
+	// POSITIVE CONTROLS: the same file with a private IP, or with https and the
+	// hostname, loads.
+	for _, u := range []string{"http://100.101.102.103:8080", "https://your-store.example:8080"} {
+		writeEnv(t, "SNIP_SHARED_URL="+u+"\nSNIP_SHARED_TOKEN=abcdefghijkl\n")
+		if cfg, err := Load(); err != nil || cfg.URL != u {
+			t.Errorf("%s refused: %v", u, err)
+		}
+	}
+}

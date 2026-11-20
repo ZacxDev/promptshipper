@@ -39,7 +39,23 @@ func CleartextRejection(rawURL string) string {
 		return ""
 	}
 	return "plain http:// is only allowed to a private IP address " +
-		"(10.x, 172.16–31.x, 192.168.x, 100.64–127.x, 127.x, ::1, fd00::/8) — use https:// for " + host
+		"(10.x, 172.16–31.x, 192.168.x, 100.64–127.x, 127.x, ::1, fd00::/8) — " +
+		"use an IP address in one of those ranges, or https://, instead of http://" + host
+}
+
+// redactURL is the form of a URL that may appear in a message: any userinfo
+// (`user:pass@`) is removed, because it is a credential. A URL that does not
+// parse is not quoted at all — whatever it holds cannot be shown safely.
+//
+// 🔴 EVERY URL PLACED IN AN ERROR GOES THROUGH HERE. The bearer token is never
+// in a URL, but a hand-written one can carry a password in its userinfo.
+func redactURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "(an unparseable URL)"
+	}
+	u.User = nil
+	return u.String()
 }
 
 // isPrivateHost: `localhost`, or a strict IP literal in the ranges above.

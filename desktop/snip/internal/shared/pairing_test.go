@@ -2,6 +2,7 @@ package shared
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,7 +123,7 @@ func TestParsePairingRefuses(t *testing.T) {
 		{"short token", payload(t, ok, setClip("token", strings.Repeat("a", 23))), "clip.token is shorter than 24 characters"},
 		{"bad char", payload(t, ok, setClip("token", clipTok+"+")), "clip.token has a character outside [A-Za-z0-9._~-]"},
 		{"public http", payload(t, "http://203.0.113.5:8139", nil), "plain http:// is only allowed to a private IP address"},
-		{"hostname http", payload(t, "http://clip.example:8139", nil), "use https:// for clip.example"},
+		{"hostname http", payload(t, "http://clip.example:8139", nil), "or https://, instead of http://clip.example"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -339,36 +340,90 @@ func TestCleartextRejection(t *testing.T) {
 	}
 }
 
+// countingTransport is an http.RoundTripper that records every request handed
+// to it and answers 200 with an empty clip list — without any network. It is
+// installed AS the client's transport, so it sees every attempt the client
+// makes, including one to a host that would never resolve: a counting SERVER
+// cannot see a request whose dial fails, which is how an earlier version of
+// this test passed with the cleartext check moved after the send.
+type countingTransport struct {
+	hosts []string
+	auth  []string
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.hosts = append(c.hosts, r.URL.Host)
+	c.auth = append(c.auth, r.Header.Get("Authorization"))
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"clips":[]}`)),
+		Request:    r,
+	}, nil
+}
+
 // The rule holds at the REQUEST, whichever source built the Config: a Client
-// pointed at a public plain-http URL sends nothing (the fake server counts).
+// pointed at a public plain-http URL hands NOTHING to its transport — so the
+// bearer token never leaves the process — for both the list and the delete.
 func TestTheClientSendsNoRequestToAPublicHTTPURL(t *testing.T) {
-	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		_, _ = w.Write([]byte(`{"clips":[]}`))
-	}))
-	defer srv.Close()
-	// POSITIVE CONTROL: the loopback URL reaches the server.
-	if _, err := NewWithClient(Config{URL: srv.URL, Token: clipTok}, srv.Client()).Rows(0); err != nil || hits != 1 {
-		t.Fatalf("control: err=%v hits=%d", err, hits)
+	// POSITIVE CONTROL: an allowed URL reaches the transport, with the token.
+	ctl := &countingTransport{}
+	if _, err := NewWithClient(Config{URL: "http://100.101.102.103:8139", Token: clipTok},
+		&http.Client{Transport: ctl}).Rows(0); err != nil || len(ctl.hosts) != 1 || ctl.auth[0] != "Bearer "+clipTok {
+		t.Fatalf("control: err=%v requests=%v", err, ctl.hosts)
 	}
-	// Same server, addressed by a hostname over http: refused before dialling.
-	// (The transport would resolve "localhost.example" nowhere; the point is
-	// that no request is attempted and the reason is the rule.)
-	for _, call := range []func(c *Client) error{
-		func(c *Client) error { _, err := c.Rows(0); return err },
-		func(c *Client) error { return c.Delete(1) },
+	for name, call := range map[string]func(c *Client) error{
+		"rows":   func(c *Client) error { _, err := c.Rows(0); return err },
+		"delete": func(c *Client) error { return c.Delete(1) },
 	} {
-		c := NewWithClient(Config{URL: "http://clip.example:8139", Token: clipTok}, srv.Client())
-		err := call(c)
-		if err == nil || !strings.Contains(err.Error(), "use https:// for clip.example") {
-			t.Errorf("err = %v", err)
-		}
-		if err != nil && strings.Contains(err.Error(), clipTok) {
-			t.Errorf("message carries the token")
+		for _, u := range []string{"http://clip.example:8139", "http://203.0.113.5:8139"} {
+			rt := &countingTransport{}
+			err := call(NewWithClient(Config{URL: u, Token: clipTok}, &http.Client{Transport: rt}))
+			if len(rt.hosts) != 0 {
+				t.Errorf("%s %s: %d request(s) reached the transport (%v) — the token was sent", name, u, len(rt.hosts), rt.hosts)
+			}
+			if err == nil || !strings.Contains(err.Error(), "or https://, instead of http://") {
+				t.Errorf("%s %s: err = %v", name, u, err)
+			}
+			if err != nil && strings.Contains(err.Error(), clipTok) {
+				t.Errorf("%s %s: message carries the token", name, u)
+			}
 		}
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 (the control only)", hits)
+}
+
+// No message quotes a URL's userinfo: a URL with `user:pass@` is quoted with
+// it removed, by the client, by the pairing loader and by the env-file loader.
+func TestNoMessageQuotesURLUserinfo(t *testing.T) {
+	const secret = "hunter2-userinfo-secret"
+	withCreds := "http://alice:" + secret + "@clip.example:8139"
+
+	c := NewWithClient(Config{URL: withCreds, Token: clipTok}, &http.Client{Transport: &countingTransport{}})
+	_, rowsErr := c.Rows(0)
+	_, pairErr := ParsePairing(payload(t, withCreds, nil), "/p/pairing.json")
+	envErr := Config{URL: withCreds, Token: "abcdefghijkl"}.Validate("/e/shared.env")
+
+	for name, err := range map[string]error{"client": rowsErr, "pairing": pairErr, "env file": envErr} {
+		if err == nil {
+			t.Fatalf("%s: a public http URL with credentials was accepted", name)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, secret) || strings.Contains(msg, "alice") {
+			t.Errorf("%s: message carries the userinfo: %q", name, msg)
+		}
+		if name != "pairing" && !strings.Contains(msg, `"http://clip.example:8139"`) {
+			t.Errorf("%s: message %q does not name the redacted URL", name, msg)
+		}
+	}
+	// The helper itself, literal in and out.
+	for in, want := range map[string]string{
+		withCreds:                     "http://clip.example:8139",
+		"https://u@clip.example:1/":   "https://clip.example:1/",
+		"http://100.101.102.103:8139": "http://100.101.102.103:8139",
+		"http://a b@x:1\x7f":          "(an unparseable URL)",
+	} {
+		if got := redactURL(in); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
