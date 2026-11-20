@@ -16,14 +16,26 @@
       forAllSystems = f: lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
-      # ── desktop packages go here ─────────────────────────────────────────
-      # TODO(desktop/snip): `packages.<system>.snip`  — lands with PR #3/#4.
-      # TODO(server/mcp):   `packages.<system>.mcp`   — lands with PR #3/#4.
+      # ── desktop packages ─────────────────────────────────────────────────
+      # snip (desktop/snip/package.nix) and the MCP server
+      # (server/mcp/package.nix). CI builds both and runs them (chart.yml,
+      # `flake`); `nix flake check` alone only evaluates packages.
       # TODO(home-manager): `homeManagerModules.default` (snip + mcp on the
-      #                     desktop), next to `packages`, once both exist.
+      #                     desktop), next to `packages`.
       # Do not add server packages or NixOS server modules here (decided
       # 2026-11-20): compose and the chart are the server install paths.
       # ─────────────────────────────────────────────────────────────────────
+      packages = forAllSystems (
+        _: pkgs: {
+          snip = pkgs.callPackage ./desktop/snip/package.nix { src = ./desktop/snip; };
+          mcp = pkgs.callPackage ./server/mcp/package.nix {
+            src = ./server/mcp;
+            rev = self.shortRev or self.dirtyShortRev or "unknown";
+          };
+        }
+      );
+      # No `apps` output: `nix run .#snip` / `.#mcp` fall back to these
+      # packages and run each one's meta.mainProgram.
 
       devShells = forAllSystems (
         _: pkgs: {

@@ -249,14 +249,14 @@ every device loses it, there is no trash and the service has no undo. So:
 
 ## Nix
 
-`desktop/snip/package.nix` is the package. ⚠ promptshipper's root flake does
-**not** export it yet (`packages.<system>.snip` is still a TODO in `flake.nix`),
-so `nix build github:ZacxDev/promptshipper#snip` fails today. Until it does,
-call the file directly with your nixpkgs:
+`desktop/snip/package.nix` is the package; promptshipper's root flake exposes
+it as `packages.<system>.snip` (`nix run` uses its `meta.mainProgram`), x86_64-linux only:
 
-```nix
-# with promptshipper checked out (or as a non-flake input `src`):
-pkgs.callPackage ./desktop/snip/package.nix { src = ./desktop/snip; }
+```sh
+nix build github:ZacxDev/promptshipper#snip    # or: nix run github:ZacxDev/promptshipper#snip -- --version
+# as an input, with the consumer's nixpkgs:
+#   inputs.promptshipper.url = "github:ZacxDev/promptshipper";
+#   inputs.promptshipper.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
 `package.nix` reads the version out of `cmd/snip/version.go` (never a hand-held

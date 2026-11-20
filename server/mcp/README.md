@@ -75,7 +75,18 @@ copied it.
 
 ## Install
 
-Build the binary (Go ≥ 1.26; the repository is the source until releases ship):
+With Nix (x86_64-linux): the root flake exposes `packages.<system>.mcp`
+(`server/mcp/package.nix`), whose binary is `promptshipper-mcp`:
+
+```sh
+nix profile install github:ZacxDev/promptshipper#mcp   # or: nix run github:ZacxDev/promptshipper#mcp -- -version
+```
+
+Its `-version` prints `0-unstable-<commit>` (the source has no release
+version yet). The examples below use `~/.local/bin/promptshipper-mcp`; with
+Nix, use `$(command -v promptshipper-mcp)` instead.
+
+Or build the binary yourself (Go ≥ 1.26):
 
 ```sh
 cd server/mcp
