@@ -77,6 +77,7 @@ type clipStore interface {
 	Put(ctx context.Context, body, device string, nowMillis int64) (Clip, bool, error)
 	List(ctx context.Context, limit int, q string) ([]Clip, error)
 	After(ctx context.Context, after int64, limit int) ([]Clip, error)
+	Head(ctx context.Context) (int64, error)
 	Delete(ctx context.Context, id int64) error
 	Ping(ctx context.Context) error
 }
@@ -304,8 +305,8 @@ func (a *API) postClip(w http.ResponseWriter, r *http.Request) {
 			"the clip store could not be written")
 		return
 	}
-	// Wake long-poll waiters. A dedup bump wakes them too; they re-query and
-	// find nothing new (a bump keeps its id), which costs one cheap SELECT.
+	// Wake long-poll waiters. A dedup bump wakes them too, and IS delivered:
+	// it takes a new seq (see Store.Put), so a re-pushed body reaches the feed.
 	a.changes.notify()
 	status := http.StatusCreated
 	if deduped {

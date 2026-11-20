@@ -25,7 +25,7 @@ endpoint and nothing else; see "`/healthz` is unauthenticated" below. Errors are
 |---|---|
 | `POST /v1/clips` | `{"body":…,"device":…}` → `201` with the clip, or `200` with `"deduped":true` when an identical body already existed and was bumped to the front |
 | `GET /v1/clips?limit=N&q=…` | `{"clips":[…],"limit":N,"query":"…"}`, newest first |
-| `GET /v1/clips?after=SEQ&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N}`, clips with `seq > SEQ`, **in `seq` order**; see *Change feed* |
+| `GET /v1/clips?after=SEQ&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N,"head":H}`, clips with `seq > SEQ`, **in `seq` order**; see *Change feed* |
 | `DELETE /v1/clips/{id}` | `204`, or `404 no_such_clip` |
 | `GET /healthz` | `{"status":"ok"}`, or `503 store_unreadable`. **Probe-only, and the one route that needs no token.** Still reads a row. |
 
@@ -103,6 +103,20 @@ clips without hammering the list:
   `after=<last seq>`. Start with `after=0`. To skip history, read the feed with
   `wait=0` until it returns fewer than `limit` rows and keep its largest `seq`.
   Never use `id` as the cursor.
+* **Every feed answer carries `head`**: the counter's current value, i.e. the
+  largest `seq` ever assigned (deleted rows included), even when `clips` is
+  empty. **Contract: if your cursor is greater than `head`, reset it to
+  `head` and treat that as a resync** — the store was restored from an older
+  backup or replaced by a fresh volume, so clips you already hold may be gone
+  and later clips will reuse lower numbers. A request with `after > head`
+  answers at once, whatever `wait` says, so it never waits forever.
+* **Deletes are not in the feed.** A deleted clip simply stops existing; no
+  event is sent for it.
+* ⚠ **Downgrade note:** a previous binary (from before `seq`) can run against
+  a migrated database, but every clip it writes gets `seq = 0`, which the
+  feed never delivers. Upgrading again does not renumber them; they stay
+  visible in the newest-first list. (The `seq` index is deliberately not
+  UNIQUE, so such rows never break later POSTs.)
 * `seq` is not the list order: `GET /v1/clips` without `after` is still the
   newest-first list by `created_at`, unchanged.
 * A database created before `seq` existed is migrated on start: existing rows

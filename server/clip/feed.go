@@ -130,6 +130,12 @@ func (a *API) feedClips(w http.ResponseWriter, r *http.Request) {
 	for {
 		woken := a.changes.current() // BEFORE the query: see the file comment
 		clips, err := a.store.After(r.Context(), after, limit)
+		var head int64
+		if err == nil {
+			// Read AFTER the clips: the counter steps in the same transaction
+			// as every write, so head >= every seq just returned.
+			head, err = a.store.Head(r.Context())
+		}
 		if err != nil {
 			if errors.Is(r.Context().Err(), context.Canceled) {
 				return // the client went away
@@ -138,23 +144,36 @@ func (a *API) feedClips(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusServiceUnavailable, "store_unreadable", "the clip store could not be read")
 			return
 		}
-		if len(clips) > 0 || wait == 0 {
-			writeJSON(w, http.StatusOK, listClipsResponse{Clips: clips, Limit: limit})
+		// 🔴 A cursor AHEAD of the counter (the store was restored from an
+		// older backup, or replaced by a fresh volume) could never be
+		// satisfied: answer at once, whatever `wait` says, so the client sees
+		// `head` and resyncs instead of waiting forever.
+		if len(clips) > 0 || wait == 0 || after > head {
+			writeJSON(w, http.StatusOK, feedResponse{Clips: clips, Limit: limit, Head: head})
 			return
 		}
 		select {
 		case <-woken:
 			if a.changes.isStopped() {
-				writeJSON(w, http.StatusOK, listClipsResponse{Clips: []Clip{}, Limit: limit})
+				writeJSON(w, http.StatusOK, feedResponse{Clips: []Clip{}, Limit: limit, Head: head})
 				return
 			}
 		case <-deadline.C:
-			writeJSON(w, http.StatusOK, listClipsResponse{Clips: []Clip{}, Limit: limit})
+			writeJSON(w, http.StatusOK, feedResponse{Clips: []Clip{}, Limit: limit, Head: head})
 			return
 		case <-r.Context().Done():
 			return
 		}
 	}
+}
+
+// feedResponse is the change feed's answer: the plain list's fields plus
+// `head`, the counter's value (the largest seq ever assigned). Contract: a
+// client whose cursor is greater than `head` resets its cursor to `head`.
+type feedResponse struct {
+	Clips []Clip `json:"clips"`
+	Limit int    `json:"limit"`
+	Head  int64  `json:"head"`
 }
 
 func (c *changes) isStopped() bool {

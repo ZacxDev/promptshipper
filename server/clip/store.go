@@ -255,7 +255,23 @@ func ensureSeq(db *sql.DB) error {
 		  coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'clips'), 0)))`); err != nil {
 		return fmt.Errorf("seed the seq counter: %w", err)
 	}
-	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS clips_by_seq ON clips (seq)`); err != nil {
+	// 🔴 NOT UNIQUE, ON PURPOSE. Uniqueness is already guaranteed by the
+	// counter, stepped in the same transaction as every write. A UNIQUE index
+	// would turn a ROLLBACK to the pre-seq binary into an outage: its INSERT
+	// leaves seq = 0, so the second such row violates the index and every POST
+	// after it is a 503. An index from an earlier cut that WAS unique is
+	// replaced here.
+	var unique int
+	err = tx.QueryRow(`SELECT "unique" FROM pragma_index_list('clips') WHERE name = 'clips_by_seq'`).Scan(&unique)
+	switch {
+	case err == nil && unique != 0:
+		if _, err := tx.Exec(`DROP INDEX clips_by_seq`); err != nil {
+			return fmt.Errorf("drop the unique seq index: %w", err)
+		}
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("read the seq index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS clips_by_seq ON clips (seq)`); err != nil {
 		return fmt.Errorf("index seq: %w", err)
 	}
 	return tx.Commit()
@@ -606,6 +622,17 @@ func (s *Store) After(ctx context.Context, after int64, limit int) ([]Clip, erro
 		return nil, fmt.Errorf("iterate clips: %w", err)
 	}
 	return out, nil
+}
+
+// Head is the feed counter's current value: the largest seq ever assigned
+// (deleted rows included). Every feed answer carries it so a client whose
+// cursor is AHEAD of it (a restored backup, a fresh volume) can resync.
+func (s *Store) Head(ctx context.Context) (int64, error) {
+	var v int64
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM clip_seq WHERE id = 1`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("read the seq counter: %w", err)
+	}
+	return v, nil
 }
 
 // CountContaining counts clips whose body or device contains needle. Used ONLY

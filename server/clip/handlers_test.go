@@ -65,6 +65,7 @@ func (f failingStore) Put(context.Context, string, string, int64) (Clip, bool, e
 }
 func (f failingStore) List(context.Context, int, string) ([]Clip, error) { return nil, f.err }
 func (f failingStore) After(context.Context, int64, int) ([]Clip, error) { return nil, f.err }
+func (f failingStore) Head(context.Context) (int64, error)               { return 0, f.err }
 func (f failingStore) Delete(context.Context, int64) error               { return f.err }
 func (f failingStore) Ping(context.Context) error                        { return f.err }
 
@@ -81,6 +82,7 @@ func (r *recordingStore) Put(_ context.Context, body, device string, at int64) (
 	return Clip{ID: 1, Body: body, Device: device, CreatedAt: at}, false, nil
 }
 func (r *recordingStore) After(context.Context, int64, int) ([]Clip, error) { return []Clip{}, nil }
+func (r *recordingStore) Head(context.Context) (int64, error)               { return 0, nil }
 func (r *recordingStore) List(_ context.Context, limit int, q string) ([]Clip, error) {
 	r.lastLimit, r.lastQuery = limit, q
 	if r.clips == nil {
