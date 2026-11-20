@@ -81,11 +81,13 @@ jobs:
       # success having executed ZERO tests, so the count is asserted, not
       # inferred from the task's exit status.
       #
-      # BASELINE: 1228 tests / 115 classes, measured by THIS workflow's run
-      # 44637733101 on feat/android-port at b1ee4b3 (the dicta import plus the
-      # pairing / private-network work). 1228 * 500 / 575 = 1067.8 -> 1067.
-      # (Previous: 1202 / 111 on dicta's feat/history-export-import a7bb3e6,
-      # floor 1045.) Re-derive it when the suite moves, from the XML of a
+      # BASELINE: 1243 tests / 116 classes, measured by THIS workflow's run
+      # 44653448230 on feat/android-port at d80956f (+5 HistoryArchiveTest from
+      # the dicta #55 fix port, +8 DictationClipFeedTest, +2 ClipSeamLedgerTest
+      # for the two-writer ledger and its control; one new class).
+      # 1243 * 500 / 575 = 1080.9 -> 1080.
+      # (Previous: 1228 / 115 at b1ee4b3, floor 1067; 1202 / 111 on dicta's
+      # feat/history-export-import a7bb3e6, floor 1045.) Re-derive it when the suite moves, from the XML of a
       # CI run, never from a hand count:
       #     floor = floor(current_total * 500 / 575)      # ~13% slack
       # and NAME THE TREE you counted on. TestCountFloorTest fails if this floor
@@ -94,7 +96,7 @@ jobs:
       # restate it; the same test pins that.)
       - name: Assert tests actually ran
         if: always()
-        run: python3 scripts/assert-tests-ran.py --min 1067
+        run: python3 scripts/assert-tests-ran.py --min 1080
 
       - name: Upload test reports
         if: always()
