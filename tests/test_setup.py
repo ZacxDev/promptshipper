@@ -188,6 +188,39 @@ def test_an_ipv6_ula_host_binds_that_address(tree):
     assert envfile(tree)[1]["BIND"] == "fd7a:115c:a1e0::9"
 
 
+# ONE definition of "private", shared with the Android app (PrivateNetworkTest.kt)
+# and snip (cleartext.go): 10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, ::1 and
+# fd00::/8 — NOT all of fc00::/7. Boundaries on both sides of every range, and
+# spellings the app refuses as ambiguous (leading-zero octet, octet > 255, a
+# malformed "::", a short first group that only LOOKS like fd…).
+PRIVATE_HOSTS = [
+    "10.0.0.0", "10.255.255.255", "172.16.0.0", "172.31.255.255", "192.168.0.0",
+    "192.168.255.255", "100.64.0.0", "100.127.255.255", "127.0.0.1",
+    "::1", "0:0:0:0:0:0:0:1", "fd00::", "fd7a:115c:a1e0::9",
+    "FD7A:115C:A1E0:ab12:4843:cd96:6258:b240", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+]
+NOT_PRIVATE_HOSTS = [
+    "fc00::1", "fcff::1",  # fc00::/8: ULA by RFC 4193's /7, but not what the app allows
+    "fd::1", "fd0::1",  # 00fd:: and 0fd0:: — the text starts "fd", the address does not
+    "fd00:::1", "fd00::1:2:3:4:5:6:7", "::ffff:10.0.0.1", "fe80::1", "2001:db8::1", "::2",
+    "10.0.0.256", "010.0.0.1", "9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0",
+    "192.167.255.255", "192.169.0.0", "100.63.255.255", "100.128.0.0", "128.0.0.0", "169.254.1.1",
+]
+
+
+@pytest.mark.parametrize("host", PRIVATE_HOSTS)
+def test_a_private_address_host_binds_that_address(tree, host):
+    r = run(tree, "--no-start", "--host", host, "--no-qr")
+    assert r.returncode == 0, r.stderr
+    assert envfile(tree)[1]["BIND"] == host
+
+
+@pytest.mark.parametrize("host", NOT_PRIVATE_HOSTS)
+def test_an_address_the_app_would_refuse_is_not_bound_automatically(tree, host):
+    r = run(tree, "--no-start", "--host", host, "--no-qr")
+    assert r.returncode == 1 and "public address" in r.stderr, (r.returncode, r.stderr)
+
+
 def test_a_hand_set_bind_survives_a_rerun_with_a_new_host(tree):
     run(tree, "--no-start", "--host", "192.168.1.20", "--bind", "192.168.1.5", "--no-qr")
     assert run(tree, "--no-start", "--host", "192.168.1.30", "--no-qr").returncode == 0
