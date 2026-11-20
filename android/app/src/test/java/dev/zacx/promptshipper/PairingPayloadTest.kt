@@ -231,6 +231,35 @@ class PairingPayloadTest {
         assertTrue(clip().isConfigured)
     }
 
+    /** Encrypts once, then throws the real keystore's CHECKED exception. */
+    private class KeyStoreFailsSecond : SecretCipher {
+        private var calls = 0
+        override fun encrypt(plaintext: String): String {
+            if (++calls >= 2) throw java.security.KeyStoreException("keystore gone")
+            return "e:$plaintext"
+        }
+        override fun decrypt(blob: String): String? = blob.removePrefix("e:")
+    }
+
+    @Test
+    fun aCheckedKeystoreFailureOnTheSecondTokenRollsEverythingBack() {
+        // Round 1 🟡1: only RuntimeException was caught, so a KeyStoreException
+        // left the new STT token beside the old STT URL.
+        val oldStt = "0ld5tt" + "7".repeat(30)
+        stt().baseUrl = "http://10.0.0.7:8118"
+        stt().tokens.putToken(oldStt)
+        clip().baseUrl = "http://10.0.0.7:8139"
+        val cipher = KeyStoreFailsSecond()
+        val p = ctx.getSharedPreferences("pairing_test", Context.MODE_PRIVATE)
+        val s = SttSettings(p, TokenStore(p, cipher))
+        val c = ClipSettings(p, TokenStore(p, cipher, ClipSettings.KEY_TOKEN_CIPHERTEXT))
+        val thrown = runCatching { PairingWriter.apply(ok(payload()), s, c) }.exceptionOrNull()
+        assertTrue("the failure was swallowed: $thrown", thrown is java.security.KeyStoreException)
+        assertEquals("sttTokenRestored", oldStt, stt().tokens.token())
+        assertEquals("http://10.0.0.7:8118", stt().baseUrl)
+        assertEquals("http://10.0.0.7:8139", clip().baseUrl)
+    }
+
     @Test
     fun aFailedWriteRollsEverythingBack() {
         // An earlier pairing is in place.

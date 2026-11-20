@@ -81,12 +81,6 @@ class ClipSettings(
     val tokenIsUnusable: Boolean get() = !tokens.hasToken && tokens.hasCiphertext
 
     /**
-     * "Send each dictation to my clip feed". 🔴 **Default OFF**: dictation
-     * reaching the clip server — and through it the user's agents — is opt-in.
-     * Read by [DictationClipFeed]; set from Settings and from the pairing
-     * confirm screen, where it is offered unchecked.
-     */
-    /**
      * "Let my agents push to my clipboard" ([ClipPush]). Default ON: it only
      * ever acts on clips whose device is `mcp`, and only once paired.
      */
@@ -110,6 +104,12 @@ class ClipSettings(
             e.commit()
         }
 
+    /**
+     * "Send each dictation to my clip feed". 🔴 **Default OFF**: dictation
+     * reaching the clip server — and through it the user's agents — is opt-in.
+     * Read by [DictationClipFeed]; set from Settings and from the pairing
+     * confirm screen, where it is offered unchecked.
+     */
     var feedDictations: Boolean
         get() = prefs.getBoolean(KEY_FEED_DICTATIONS, false)
         set(value) {

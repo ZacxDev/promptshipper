@@ -294,7 +294,11 @@ object ClipConfigIngress {
             applied += KEY_BUBBLE_ENABLED
         }
         request.clipBaseUrl?.let {
+            val before = clip.baseUrl
             clip.baseUrl = it
+            // A different clip store: the agent push's cursor means nothing
+            // there (the same rule as Settings and pairing).
+            if (clip.baseUrl != before) clip.pushCursor = null
             applied += KEY_CLIP_BASE_URL
         }
         request.clipToken?.let {

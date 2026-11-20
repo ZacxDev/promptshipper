@@ -536,8 +536,14 @@ class BubbleService : Service() {
         // built up off-mesh to be drainable, and the service is restarted on
         // every boot and every upgrade.
         scheduleClipFlush(0L)
-        // The agent push ([ClipPush]): long-polls only while this service runs.
+        // The agent push ([ClipPush]): long-polls only while this service runs,
+        // and — as the probe does — treats a service started with the screen
+        // OFF (a boot, an upgrade) as already in the screen-off grace period.
         startClipPush()
+        if (!screenIsInteractive()) {
+            main.postDelayed(clipPushIdleStop, ClipPushListener.SCREEN_OFF_GRACE_MS)
+        }
+        SttSettings.prefs(this).registerOnSharedPreferenceChangeListener(clipPushPrefs)
     }
 
     // --- the window ---------------------------------------------------------
@@ -923,6 +929,9 @@ class BubbleService : Service() {
         // First: a long-poll that returns after this must copy nothing to the
         // clipboard (ClipPushListener.stop's contract).
         main.removeCallbacks(clipPushIdleStop)
+        runCatching {
+            SttSettings.prefs(this).unregisterOnSharedPreferenceChangeListener(clipPushPrefs)
+        }
         clipPush?.stop()
         OverlayVisibility.unregister(visibilitySink)
         // 🔴 Paired with the register in `onCreate`. [ClipOutboxHealth] is a
@@ -1813,6 +1822,27 @@ class BubbleService : Service() {
 
     private val clipPushIdleStop = Runnable { clipPush?.stop() }
 
+    /**
+     * The Settings toggle, a pairing, or the debug door changed what the push
+     * depends on: act now instead of at the next screen-on. A field, because
+     * SharedPreferences holds its listeners weakly.
+     */
+    private val clipPushPrefs =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in CLIP_PUSH_KEYS) {
+                main.post {
+                    val listener = clipPush
+                    when {
+                        listener == null -> if (screenIsInteractive()) startClipPush()
+                        // Screen on: start or stop to match the setting.
+                        screenIsInteractive() -> listener.reconcile()
+                        // Screen off: never START here, but do honour a stop.
+                        listener.isRunning -> listener.reconcile()
+                    }
+                }
+            }
+        }
+
     private fun startClipPush() {
         val listener = clipPush
             ?: (clipPushFactory?.invoke() ?: defaultClipPush()).also { clipPush = it }
@@ -1839,6 +1869,7 @@ class BubbleService : Service() {
             loadCursor = { settings.pushCursor },
             saveCursor = { settings.pushCursor = it },
             copy = { body -> main.post { copyFromAgent(body) } },
+            generation = { settings.baseUrl },
         )
     }
 
@@ -2542,6 +2573,12 @@ class BubbleService : Service() {
     }
 
     companion object {
+        /** Preference keys the agent push depends on; see [clipPushPrefs]. */
+        internal val CLIP_PUSH_KEYS: Set<String> = setOf(
+            ClipSettings.KEY_AGENT_PUSH,
+            ClipSettings.KEY_BASE_URL,
+            ClipSettings.KEY_TOKEN_CIPHERTEXT,
+        )
         const val ACTION_STOP = "dev.zacx.promptshipper.STOP_BUBBLE"
         private const val NOTIF_ID = 2001
         private const val CHANNEL_ID = "dicta_service"

@@ -98,6 +98,21 @@ class ClipHttpTest {
 
     private var opened: FakeConnection? = null
 
+    @Test
+    fun aFeedAnswerOverTheCapIsAFailureNotAPartialParse() {
+        // Round 1 🟡6: the feed read was unbounded.
+        fun answer(bytes: Int): String {
+            val head = """{"head":5,"limit":20,"clips":[{"id":1,"seq":5,"device":"mcp","body":"hi"}],"pad":""""
+            return head + "z".repeat(bytes - head.length - 2) + "\"}"
+        }
+        val over = answer(ClipPush.MAX_FEED_BYTES + 4_096)
+        val under = answer(ClipPush.MAX_FEED_BYTES - 4_096)
+        val big = ClipHttp(base, "t".repeat(32), opener = { FakeConnection(it, 200, over) }).feed(4, 0, 20)
+        assertTrue("$big", big is ClipPush.Poll.Failed)
+        val ok = ClipHttp(base, "t".repeat(32), opener = { FakeConnection(it, 200, under) }).feed(4, 0, 20)
+        assertTrue("$ok", ok is ClipPush.Poll.Rows)
+    }
+
     private fun client(
         status: Int = 201,
         body: String = """{"id":5,"deduped":false}""",

@@ -142,7 +142,8 @@ class PairingActivity : Activity() {
         val pairing = parsed ?: return
         try {
             PairingWriter.apply(pairing, SttSettings.create(this), ClipSettings.create(this))
-        } catch (e: RuntimeException) {
+        } catch (e: Exception) {
+            // Exception: the keystore's failures are checked exceptions.
             status.text = getString(R.string.pairing_failed, e.javaClass.simpleName)
             return
         }

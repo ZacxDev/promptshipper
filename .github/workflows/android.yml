@@ -81,12 +81,14 @@ jobs:
       # success having executed ZERO tests, so the count is asserted, not
       # inferred from the task's exit status.
       #
-      # BASELINE: 1257 tests / 117 classes, measured by THIS workflow's run
-      # 44663644868 on feat/android-port at 6194fd0 (+13 ClipPushTest, a new
-      # class; +1 PrivateNetworkTest for audit D2).
-      # 1257 * 500 / 575 = 1093.0 -> 1093.
-      # (Previous: 1243 / 116, floor 1080 — counted at d80956f, a commit of
-      # the pre-squash branch whose tree is identical to f3df821 here;
+      # BASELINE: 1268 tests / 117 classes on the round-1 fix commit (the
+      # commit that sets this line): 1257 measured by run 44663644868 at
+      # 6194fd0, plus +7 ClipPushTest, +1 each PairingPayloadTest,
+      # PairingActivityTest, ClipHttpTest, ClipConfigIngressTest; no new class.
+      # This one is a per-class sum, so the commit's own CI run must report
+      # TOTAL tests=1268; if it does not, re-derive it from that XML.
+      # 1268 * 500 / 575 = 1102.6 -> 1102.
+      # (Previous: 1257 / 117 at 6194fd0, floor 1093; 1243 / 116, floor 1080;
       # 1228 / 115, floor 1067; 1202 / 111 on dicta's a7bb3e6, floor 1045.) Re-derive it when the suite moves, from the XML of a
       # CI run, never from a hand count:
       #     floor = floor(current_total * 500 / 575)      # ~13% slack
@@ -96,7 +98,7 @@ jobs:
       # restate it; the same test pins that.)
       - name: Assert tests actually ran
         if: always()
-        run: python3 scripts/assert-tests-ran.py --min 1093
+        run: python3 scripts/assert-tests-ran.py --min 1102
 
       - name: Upload test reports
         if: always()

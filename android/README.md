@@ -96,6 +96,14 @@ that use the clip server (for example through the MCP server):
   short "From your agent" notice. Clips from any other device are never
   copied.
   - The cursor (the largest `seq` seen) is persisted.
+  - When the listener restarts with a saved cursor (after the bubble or screen
+    was off), it reads what is already pending and copies **only the newest
+    `mcp` clip** of that backlog, then moves past all of it. Pushes that arrive
+    while it runs are copied as usual.
+  - A poll reads at most 20 clips and at most 2 MiB; a larger answer counts
+    as a failure and is never partly applied.
+  - A result from a clip server that was replaced while the poll was open
+    (a re-pair) is discarded.
   - On the first poll, the app starts at the server's `head`, so existing
     history is never copied.
   - A cursor ahead of `head` (the store was restored from an older backup) is
@@ -105,8 +113,9 @@ that use the clip server (for example through the MCP server):
     `Retry-After`.
   - Polling stops when the bubble stops, or five minutes after the screen
     goes off. It resumes when the screen comes back on. No wake lock is held.
-  - Turning the setting off takes effect at the next poll. Turning it back on
-    takes effect the next time the screen comes on or the bubble starts.
+  - Turning the setting off or on, pairing, or changing the clip URL takes
+    effect immediately while the bubble runs. A service that starts with the
+    screen off (at boot) gets the same 5-minute grace.
 
 ## History import from dicta
 

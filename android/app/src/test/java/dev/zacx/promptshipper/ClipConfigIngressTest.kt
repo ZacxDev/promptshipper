@@ -386,6 +386,17 @@ class ClipConfigIngressTest {
     }
 
     @Test
+    fun aNewClipUrlFromTheDebugDoorClearsTheAgentPushCursor() {
+        val f = fixture()
+        apply(f, ClipConfigIngress.KEY_CLIP_BASE_URL to "https://clips.example:8443")
+        f.clip.pushCursor = 4_242L
+        apply(f, ClipConfigIngress.KEY_CLIP_BASE_URL to "https://clips.example:8443")
+        assertEquals("the same URL must keep the cursor", 4_242L, f.clip.pushCursor)
+        apply(f, ClipConfigIngress.KEY_CLIP_BASE_URL to "https://other.example:8443")
+        assertNull("a different clip store kept the old store's cursor", f.clip.pushCursor)
+    }
+
+    @Test
     fun theTwoTokensAreIndependentlySettable() {
         // 🔴 ClipSettings' whole reason for existing: the two tokens reach
         // services with different blast radii, so rotating one must not rotate

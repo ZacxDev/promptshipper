@@ -162,7 +162,11 @@ object PairingWriter {
             // A feed cursor means nothing against a different clip store; the
             // agent push re-initialises it at the new server's head.
             clip.pushCursor = null
-        } catch (e: RuntimeException) {
+        } catch (e: Exception) {
+            // 🔴 Exception, not RuntimeException: the real AndroidKeyStore
+            // throws CHECKED exceptions (KeyStoreException,
+            // KeyPermanentlyInvalidatedException) through Kotlin, and a
+            // narrower catch let them escape with half the pairing written.
             restore(before, stt, clip)
             throw e
         }

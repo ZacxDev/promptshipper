@@ -263,7 +263,17 @@ class ClipHttp(
             }
             val status = conn.responseCode
             when {
-                status == 200 -> ClipPush.parse(bodyOf(conn, ok = true))
+                status == 200 -> {
+                    // 🔴 Capped: a feed answer is read whole, and an
+                    // unbounded read is an OutOfMemoryError on a hostile or
+                    // broken server. Over the cap is a FAILURE (backoff), never
+                    // a truncated parse that silently advances the cursor.
+                    val bytes = conn.inputStream.use { readCapped(it, ClipPush.MAX_FEED_BYTES) }
+                        ?: return ClipPush.Poll.Failed(
+                            "the feed answer is over ${ClipPush.MAX_FEED_BYTES} bytes"
+                        )
+                    ClipPush.parse(bytes.toString(Charsets.UTF_8))
+                }
                 status == 429 || status == 503 -> {
                     val s = conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 5L
                     ClipPush.Poll.RetryAfter(s * 1000L)
@@ -324,6 +334,18 @@ class ClipHttp(
             ClipPost.Refused(status, ClipJson.detail(body))
         } else {
             ClipPost.Unreachable("HTTP $status")
+        }
+    }
+
+    /** At most [cap] bytes of [input], or null when it holds more. */
+    private fun readCapped(input: InputStream, cap: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) return out.toByteArray()
+            if (out.size() + n > cap) return null
+            out.write(buf, 0, n)
         }
     }
 

@@ -107,6 +107,21 @@ class PairingActivityTest {
     }
 
     @Test
+    fun aKeystoreFailureOnPairShowsAnErrorInsteadOfCrashing() {
+        // Round 1 🟡1: the real keystore throws CHECKED exceptions; Robolectric
+        // has no AndroidKeyStore, so Pair here hits exactly that failure.
+        val c = launch()
+        val a = c.get()
+        a.findViewById<EditText>(R.id.pairing_input).setText(payload)
+        a.findViewById<Button>(R.id.pair_confirm).performClick()
+        val status = a.findViewById<TextView>(R.id.pairing_status).text.toString()
+        assertTrue(status, status.startsWith(ctx.getString(R.string.pairing_failed, "").substringBefore("(")))
+        assertFalse("a failed pairing finished the screen", a.isFinishing)
+        assertNull("a failed pairing left the STT URL written", SttSettings.create(ctx).baseUrl)
+        c.destroy()
+    }
+
+    @Test
     fun theInputDoesNotPersistTokensInSavedState() {
         val c = launch()
         val input = c.get().findViewById<EditText>(R.id.pairing_input)

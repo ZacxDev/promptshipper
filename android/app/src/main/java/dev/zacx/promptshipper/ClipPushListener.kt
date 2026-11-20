@@ -22,6 +22,8 @@ class ClipPushListener(
     private val saveCursor: (Long) -> Unit,
     private val copy: (String) -> Unit,
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
+    /** See [ClipPush.Loop]'s `generation`: the clip base URL. */
+    private val generation: () -> Any? = { null },
 ) {
     /** One flag per start, so an old thread exiting cannot clear a new one's. */
     private var alive: java.util.concurrent.atomic.AtomicBoolean? = null
@@ -40,11 +42,21 @@ class ClipPushListener(
             saveCursor = saveCursor,
             copy = { if (flag.get()) copy(it) },
             stillRunning = { flag.get() && enabled() },
+            generation = generation,
         )
         thread = Thread({ run(loop, flag) }, "clip-push").apply {
             isDaemon = true
             start()
         }
+    }
+
+    /**
+     * Start or stop to match [enabled] NOW — for a setting toggled, or a
+     * pairing completed, while the bubble runs.
+     */
+    @Synchronized
+    fun reconcile() {
+        if (enabled()) start() else stop()
     }
 
     @Synchronized
@@ -59,7 +71,10 @@ class ClipPushListener(
         while (flag.get() && enabled()) {
             val delay = try {
                 loop.step()
-            } catch (_: RuntimeException) {
+            } catch (_: Exception) {
+                ClipPush.BACKOFF_MAX_MS
+            } catch (_: OutOfMemoryError) {
+                // Never take the process down for a clipboard feature.
                 ClipPush.BACKOFF_MAX_MS
             }
             if (delay > 0) {

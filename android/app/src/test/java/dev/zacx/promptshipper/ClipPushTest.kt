@@ -12,6 +12,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.Shadows.shadowOf
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -52,9 +53,13 @@ class ClipPushTest {
 
     private fun clip(seq: Long, device: String, body: String) = ClipPush.FeedClip(seq, device, body)
 
+    /** An empty catch-up answer at [head]: the loop then reads live pushes. */
+    private fun caughtUp(head: Long) = ClipPush.Poll.Rows(emptyList(), head)
+
     @Test
     fun onlyMcpClipsAreCopied() {
         val server = Server(
+            caughtUp(730),
             ClipPush.Poll.Rows(
                 listOf(
                     clip(731, "mcp", "from the agent"),
@@ -68,7 +73,9 @@ class ClipPushTest {
         )
         val copied = mutableListOf<String>()
         val cursor = Cursor(730)
-        loop(server, cursor, copied).step()
+        val l = loop(server, cursor, copied)
+        l.step()
+        l.step()
         assertEquals(listOf("from the agent", "second agent text"), copied)
         assertEquals("the cursor is the max seq seen, copied or not", 735L, cursor.value)
     }
@@ -76,15 +83,19 @@ class ClipPushTest {
     @Test
     fun theCursorIsPersistedAndTheNextPollStartsFromIt() {
         val server = Server(
+            caughtUp(407),
             ClipPush.Poll.Rows(listOf(clip(412, "pixel-8", "a"), clip(415, "mcp", "b")), head = 415),
         )
         val cursor = Cursor(407)
         val copied = mutableListOf<String>()
-        loop(server, cursor, copied).step()
+        val first = loop(server, cursor, copied)
+        first.step()
+        first.step()
         // A NEW loop (a restart) over the same persisted cursor.
         loop(server, cursor, copied).step()
-        assertEquals(Triple(407L, ClipPush.WAIT_S, ClipPush.LIMIT), server.calls[0])
-        assertEquals("the restart did not resume at the persisted cursor", 415L, server.calls[1].first)
+        assertEquals("catch-up reads without waiting", Triple(407L, 0, ClipPush.LIMIT), server.calls[0])
+        assertEquals(Triple(407L, ClipPush.WAIT_S, ClipPush.LIMIT), server.calls[1])
+        assertEquals("the restart did not resume at the persisted cursor", 415L, server.calls[2].first)
         assertEquals(listOf("b"), copied)
     }
 
@@ -127,10 +138,12 @@ class ClipPushTest {
     @Test
     fun failuresBackOffExponentiallyToACapAndResetOnSuccess() {
         val server = Server(
+            caughtUp(77),
             ClipPush.Poll.Failed("x"), ClipPush.Poll.Failed("x"), ClipPush.Poll.Failed("x"),
             ClipPush.Poll.Rows(emptyList(), head = 77), ClipPush.Poll.Failed("x"),
         )
         val l = loop(server, Cursor(77), mutableListOf())
+        assertEquals(0L, l.step())
         assertEquals(listOf(2_000L, 4_000L, 8_000L), List(3) { l.step() })
         assertEquals("an empty answer pauses briefly, never busy-polls", ClipPush.EMPTY_PAUSE_MS, l.step())
         assertEquals("a success resets the backoff", 2_000L, l.step())
@@ -139,8 +152,88 @@ class ClipPushTest {
     }
 
     @Test
+    fun anAnswerThatDoesNotAdvanceTheCursorPausesInsteadOfSpinning() {
+        // Round 1 🟡2: rows all at or below the cursor used to return 0.
+        val l = loop(
+            Server(caughtUp(5), ClipPush.Poll.Rows(listOf(clip(3, "mcp", "stale")), head = 10)),
+            Cursor(5), mutableListOf(),
+        )
+        l.step()
+        assertEquals(ClipPush.EMPTY_PAUSE_MS, l.step())
+    }
+
+    @Test
+    fun aRestartCopiesOnlyTheNewestPendingAgentClipThenLivePushesAsUsual() {
+        // Round 1 🟡3, operator-delegated: of the backlog pending at (re)start,
+        // copy only the newest mcp clip, and move the cursor past all of it.
+        val server = Server(
+            ClipPush.Poll.Rows(
+                listOf(
+                    clip(601, "mcp", "agent 1"), clip(602, "mcp", "agent 2"),
+                    clip(603, "pixel-8", "a capture"), clip(604, "mcp", "agent 3"),
+                    clip(605, "mcp", "agent 4"), clip(606, "mcp", "agent 5"),
+                    clip(607, "laptop", "newest but not an agent"),
+                ),
+                head = 607,
+            ),
+            ClipPush.Poll.Rows(listOf(clip(612, "mcp", "live one"), clip(613, "mcp", "live two")), head = 613),
+        )
+        val cursor = Cursor(600)
+        val copied = mutableListOf<String>()
+        val l = loop(server, cursor, copied)
+        l.step()
+        assertEquals(listOf("agent 5"), copied)
+        assertEquals(607L, cursor.value)
+        l.step()
+        assertEquals("live pushes after catch-up copy as before", listOf("agent 5", "live one", "live two"), copied)
+    }
+
+    @Test
+    fun aBacklogLongerThanOnePageIsReadThroughBeforeTheNewestIsCopied() {
+        val page1 = (1..ClipPush.LIMIT).map { clip(1_000L + it, "mcp", "old $it") }
+        val server = Server(
+            ClipPush.Poll.Rows(page1, head = 1_037),
+            ClipPush.Poll.Rows(listOf(clip(1_037, "mcp", "newest of the backlog")), head = 1_037),
+        )
+        val cursor = Cursor(1_000)
+        val copied = mutableListOf<String>()
+        val l = loop(server, cursor, copied)
+        l.step()
+        assertTrue("copied before the backlog was drained: $copied", copied.isEmpty())
+        l.step()
+        assertEquals(listOf("newest of the backlog"), copied)
+        assertEquals(1_037L, cursor.value)
+    }
+
+    @Test
+    fun aPollAnsweredByAServerThatWasReplacedMeanwhileIsDiscarded() {
+        // Round 1 🟡4: a re-pair while a poll is held open.
+        var base = "http://100.101.102.103:8139"
+        val cursor = Cursor(880)
+        val copied = mutableListOf<String>()
+        val server = object {
+            var calls = 0
+            fun poll(a: Long, w: Int, l: Int): ClipPush.Poll {
+                calls++
+                if (calls == 2) base = "http://192.168.1.20:8139" // re-paired mid-poll
+                return if (calls == 1) caughtUp(880)
+                else ClipPush.Poll.Rows(listOf(clip(9_999, "mcp", "old server's text")), head = 9_999)
+            }
+        }
+        val l = ClipPush.Loop(
+            server::poll, { cursor.value }, { cursor.value = it }, { copied += it }, { true },
+            generation = { base },
+        )
+        l.step()
+        assertEquals(0L, l.step())
+        assertEquals("the old server's seq became the cursor", 880L, cursor.value)
+        assertTrue(copied.isEmpty())
+    }
+
+    @Test
     fun tooManyWaitersHonoursRetryAfterWithinBounds() {
-        val l = loop(Server(ClipPush.Poll.RetryAfter(7_000), ClipPush.Poll.RetryAfter(86_400_000)), Cursor(5), mutableListOf())
+        val l = loop(Server(caughtUp(5), ClipPush.Poll.RetryAfter(7_000), ClipPush.Poll.RetryAfter(86_400_000)), Cursor(5), mutableListOf())
+        l.step()
         assertEquals(7_000L, l.step())
         assertEquals(ClipPush.RETRY_AFTER_MAX_MS, l.step())
     }
@@ -209,6 +302,68 @@ class ClipPushTest {
         assertTrue(listener.isRunning)
         c.destroy()
         assertFalse("onDestroy left the agent push running", listener.isRunning)
+    }
+
+    private fun idleListener(enabled: () -> Boolean = { true }) = ClipPushListener(
+        enabled = enabled,
+        poll = { _, _, _ -> Thread.sleep(20); ClipPush.Poll.Rows(emptyList(), 1_000) },
+        loadCursor = { 1_000L }, saveCursor = { }, copy = { },
+        sleeper = { Thread.sleep(it.coerceAtMost(50)) },
+    )
+
+    private fun serviceWith(listener: ClipPushListener, interactive: Boolean): org.robolectric.android.controller.ServiceController<BubbleService> {
+        org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)
+        val pm = RuntimeEnvironment.getApplication().getSystemService(android.os.PowerManager::class.java)
+        shadowOf(pm).setIsInteractive(interactive)
+        val c = Robolectric.buildService(BubbleService::class.java)
+        c.get().clipPushFactory = { listener }
+        c.create()
+        return c
+    }
+
+    @Test
+    fun aServiceStartedWithTheScreenOffStopsThePushAfterTheGrace() {
+        // Round 1 🟡5: onCreate started the listener with no screen check.
+        val listener = idleListener()
+        val c = serviceWith(listener, interactive = false)
+        assertTrue(listener.isRunning)
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(
+            java.time.Duration.ofMillis(ClipPushListener.SCREEN_OFF_GRACE_MS + 1_000)
+        )
+        assertFalse("screen off since start, and the push still runs", listener.isRunning)
+        c.destroy()
+    }
+
+    @Test
+    fun aServiceStartedWithTheScreenOnKeepsThePushRunning() {
+        val listener = idleListener()
+        val c = serviceWith(listener, interactive = true)
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(
+            java.time.Duration.ofMillis(ClipPushListener.SCREEN_OFF_GRACE_MS + 1_000)
+        )
+        assertTrue(listener.isRunning)
+        c.destroy()
+    }
+
+    @Test
+    fun turningTheSettingOffStopsThePushNowAndOnStartsItAgain() {
+        // 🟢: the toggle used to wait for the next screen-on or bubble start.
+        val ctx = RuntimeEnvironment.getApplication()
+        val prefs = SttSettings.prefs(ctx)
+        val settings = ClipSettings(prefs, TokenStore(prefs, object : SecretCipher {
+            override fun encrypt(plaintext: String) = plaintext
+            override fun decrypt(blob: String): String? = blob
+        }, ClipSettings.KEY_TOKEN_CIPHERTEXT))
+        val listener = idleListener(enabled = { settings.agentPush })
+        val c = serviceWith(listener, interactive = true)
+        assertTrue(listener.isRunning)
+        settings.agentPush = false
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertFalse("the push kept running after the user turned it off", listener.isRunning)
+        settings.agentPush = true
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertTrue("turning it back on did not start it", listener.isRunning)
+        c.destroy()
     }
 
     @Test
