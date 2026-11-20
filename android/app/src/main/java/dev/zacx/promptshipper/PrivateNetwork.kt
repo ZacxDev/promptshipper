@@ -35,8 +35,10 @@ import java.net.URL
  *  * IPv4 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918),
  *    `100.64.0.0/10` (CGNAT — the range Tailscale assigns), `127.0.0.0/8`;
  *  * IPv6 `::1` and `fd00::/8` (unique-local; Tailscale's `fd7a:115c:a1e0::/48`
- *    is inside it);
- *  * the hostname `localhost`.
+ *    is inside it).
+ *
+ * `localhost` is deliberately NOT an exception (audit D2): it is a name the
+ * platform resolves like any other, and the loopback literals cover the case.
  *
  * 🔴 **A hostname is never private**, whatever it resolves to — including
  * Tailscale MagicDNS names (`*.ts.net`) and LAN names (`*.local`, `*.lan`). The
@@ -100,7 +102,6 @@ object PrivateNetwork {
 
     fun isPrivateHost(host: String): Boolean {
         val h = host.lowercase()
-        if (h == "localhost") return true
         ipv4(h)?.let { return isPrivateV4(it) }
         ipv6(h)?.let { return isPrivateV6(it) }
         return false

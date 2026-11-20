@@ -33,7 +33,6 @@ class PrivateNetworkTest {
             "192.168.0.0", "192.168.255.255",
             "100.64.0.0", "100.127.255.255",
             "127.0.0.1", "127.255.255.255",
-            "localhost", "LOCALHOST",
         )) {
             assertTrue("$h should be private", PrivateNetwork.isPrivateHost(h))
         }
@@ -72,6 +71,20 @@ class PrivateNetworkTest {
             "10.0.0.1.example.com", "192.168.1.1.nip.io", "localhost.example")) {
             assertFalse("$h is a hostname", PrivateNetwork.isPrivateHost(h))
         }
+    }
+
+    @Test
+    fun localhostIsAHostnameAndIsRefusedForCleartext() {
+        // Audit D2: `localhost` is resolved by the platform like any other
+        // name, so it gets no exception; 127.0.0.1 and ::1 are the loopback
+        // literals that remain allowed.
+        for (h in listOf("localhost", "LOCALHOST")) {
+            assertFalse("$h is a hostname", PrivateNetwork.isPrivateHost(h))
+        }
+        assertNotNull(PrivateNetwork.cleartextRejection("http://localhost:8118"))
+        assertNotNull(BaseUrlRule.rejectionFor("http://localhost:8118", "/v1/clips"))
+        assertNull(PrivateNetwork.cleartextRejection("http://127.0.0.1:8118"))
+        assertNull(PrivateNetwork.cleartextRejection("http://[::1]:8118"))
     }
 
     @Test

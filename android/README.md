@@ -61,9 +61,9 @@ permits cleartext and **`PrivateNetwork` is the rule, in one place**:
 |---|---|
 | `https://` anything | yes |
 | `http://` IPv4 in `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT — Tailscale), `127.0.0.0/8` | yes |
-| `http://` IPv6 `::1` or `fd00::/8` (incl. Tailscale's `fd7a:115c:a1e0::/48`), or `localhost` | yes |
+| `http://` IPv6 `::1` or `fd00::/8` (incl. Tailscale's `fd7a:115c:a1e0::/48`) | yes |
 | `http://` any other address | **no** |
-| `http://` any **hostname** — including Tailscale MagicDNS `*.ts.net`, `*.local`, `*.lan` | **no** |
+| `http://` any **hostname** — including `localhost`, Tailscale MagicDNS `*.ts.net`, `*.local`, `*.lan` | **no** |
 
 Hostnames are refused for cleartext because the name is resolved *after* the
 check, so the check cannot know where the bytes go. A tailnet name gets a real
