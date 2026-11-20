@@ -18,12 +18,11 @@ import (
 // Clip is one row of the shared clipboard.
 //
 // CreatedAt is unix MILLIseconds, not seconds: two captures inside one second
-// are ordinary (a copy, a correction, a re-copy), and a seconds resolution would
-// make `ORDER BY created_at DESC` a coin flip between them. `id DESC` is the
-// documented tiebreak anyway, but it is a tiebreak on INSERT order, which after
-// a dedup bump is the OPPOSITE of recency — the bumped row keeps its old, low
-// id. Millisecond resolution is what keeps the tiebreak from mattering in
-// practice.
+// are ordinary (a copy, a correction, a re-copy). Ties within one millisecond
+// are broken by RECENCY: `ORDER BY created_at DESC, seq DESC`. seq is stamped
+// on every insert AND every dedup bump, so a bumped row sorts above anything
+// written before it. (The old `id DESC` tiebreak ordered by INSERT, which after
+// a bump is the opposite of recency — the bumped row keeps its old, low id.)
 type Clip struct {
 	ID        int64  `json:"id"`
 	Body      string `json:"body"`
@@ -132,7 +131,8 @@ CREATE TABLE IF NOT EXISTS clip_seq (
   value INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS clips_by_recency ON clips (created_at DESC, id DESC);
+-- clips_by_recency is created in ensureSeq: it needs the seq column, which a
+-- pre-seq database only gains there.
 
 CREATE VIRTUAL TABLE IF NOT EXISTS` + ftsTableDef + `;
 
@@ -273,6 +273,21 @@ func ensureSeq(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS clips_by_seq ON clips (seq)`); err != nil {
 		return fmt.Errorf("index seq: %w", err)
+	}
+	// The newest-first list's index, tiebroken by seq (recency). Earlier
+	// releases created it on (created_at DESC, id DESC); replace that one.
+	var recency string
+	err = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'clips_by_recency'`).Scan(&recency)
+	switch {
+	case err == nil && !strings.Contains(recency, "seq DESC"):
+		if _, err := tx.Exec(`DROP INDEX clips_by_recency`); err != nil {
+			return fmt.Errorf("drop the id-tiebroken recency index: %w", err)
+		}
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("read the recency index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS clips_by_recency ON clips (created_at DESC, seq DESC)`); err != nil {
+		return fmt.Errorf("index recency: %w", err)
 	}
 	return tx.Commit()
 }
@@ -544,7 +559,7 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 			SELECT c.id, c.body, c.device, c.created_at, c.bump_count, c.seq
 			FROM clips c
 			WHERE c.id IN (SELECT rowid FROM clips_fts WHERE clips_fts MATCH ?)
-			ORDER BY c.created_at DESC, c.id DESC
+			ORDER BY c.created_at DESC, c.seq DESC
 			LIMIT ?`, plan.Match, limit)
 
 	case SearchScan:
@@ -567,14 +582,14 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 			SELECT c.id, c.body, c.device, c.created_at, c.bump_count, c.seq
 			FROM clips c
 			WHERE `+strings.Join(conds, " AND ")+`
-			ORDER BY c.created_at DESC, c.id DESC
+			ORDER BY c.created_at DESC, c.seq DESC
 			LIMIT ?`, args...)
 
 	default: // SearchAll — no query, the plain newest-first list.
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT id, body, device, created_at, bump_count, seq
 			FROM clips
-			ORDER BY created_at DESC, id DESC
+			ORDER BY created_at DESC, seq DESC
 			LIMIT ?`, limit)
 	}
 	if err != nil {

@@ -198,7 +198,7 @@ to the device it most recently came from.
 > ⚠ **Clip ids have gaps, and that is normal.** `AUTOINCREMENT` allocates a
 > rowid before the conflict is resolved, so a POST that turns out to be a dedup
 > bump consumes an id nothing uses. Ids are opaque handles for `DELETE`; nothing
-> may read order or count out of them (`created_at DESC, id DESC` is the order).
+> may read order or count out of them (`created_at DESC, seq DESC` is the order).
 
 ## Storage
 

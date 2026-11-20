@@ -46,7 +46,7 @@ func TestPostKeepsWorkingAfterAnOldBinaryInsertedSeqZeroRows(t *testing.T) {
 			t.Fatalf("an old-binary insert failed: %v — a UNIQUE seq index refuses the second seq=0 row", err)
 		}
 	}
-	api := NewAPI(s, feedToken, time.Now)
+	api := NewAPI(s, feedToken, frozenClock)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 
