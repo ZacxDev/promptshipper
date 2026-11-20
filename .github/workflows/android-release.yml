@@ -1,0 +1,149 @@
+name: android release
+
+# Tag-driven, and ONLY tag-driven: `android-v<major>.<minor>.<patch>`. The
+# servers' image releases use plain `v*` tags (release.yml), and a GitHub tag
+# glob is anchored at the start, so neither workflow fires on the other's tag.
+# The version lives in android/app/build.gradle.kts; the tag only has to match.
+on:
+  push:
+    tags:
+      - 'android-v*'
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # required by `gh release create`
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    env:
+      # 🔴 The certificate every installed promptshipper trusts: the release
+      # key generated for this app (not dicta's key — a new applicationId gets
+      # a new key). An APK signed by anything else cannot be installed over a
+      # published build: Android fails it with INSTALL_FAILED_UPDATE_INCOMPATIBLE
+      # and the only way through is an uninstall, which destroys the user's
+      # on-device history. A public SHA-256 fingerprint, not a secret.
+      EXPECTED_SIGNER_SHA256: 90cdc77e35a42d8fc457cb6ca97d711f83bbd189135ca41ff2e49d75ee4e6780
+      # $RUNNER_TEMP inside `run:`, never the `runner.temp` context at job
+      # level: that context does not exist when job-level env is evaluated, and
+      # GitHub rejects the whole workflow file (startup_failure, zero jobs).
+      KEYSTORE_NAME: promptshipper-release.jks
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # ---------------------------------------------------------------- GATE 1
+      # Cheapest first: a mistyped tag fails in seconds, before a long build.
+      - name: Gate — the tag matches the version in the tree
+        run: python3 scripts/assert-version-matches-tag.py "${GITHUB_REF_NAME}"
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
+      # 🔴 THE FLOOR IS READ OUT OF android.yml, NOT RESTATED HERE — one number,
+      # one place. Comments are stripped first (that file's comment block quotes
+      # numbers in prose), and an empty match FAILS rather than running the
+      # assertion with no floor, which would pass vacuously.
+      - name: Assert tests actually ran
+        run: |
+          set -euo pipefail
+          min=$(grep -vE '^[[:space:]]*#' ../.github/workflows/android.yml \
+            | grep -oE 'assert-tests-ran\.py --min [0-9]+' \
+            | grep -oE '[0-9]+$' | head -1)
+          if [[ -z "${min}" ]]; then
+            echo "error: could not read the --min floor out of" \
+                 ".github/workflows/android.yml; refusing to publish behind a" \
+                 "gate that measured nothing." >&2
+            exit 2
+          fi
+          echo "test-count floor inherited from android.yml: --min ${min}"
+          python3 scripts/assert-tests-ran.py --min "${min}"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-test-results
+          path: |
+            android/app/build/reports/tests/testDebugUnitTest/
+            android/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
+
+      # 🔴 Decoded OUTSIDE the repo ($RUNNER_TEMP) so no step and no stray
+      # `git add` can see it. Never echoed: the base64 goes straight from the
+      # secret into the decoder.
+      - name: Decode the release keystore
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANDROID_RELEASE_KEYSTORE_B64}" ]]; then
+            echo "error: the ANDROID_RELEASE_KEYSTORE_B64 secret is empty or unset." >&2
+            exit 2
+          fi
+          printf '%s' "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/${KEYSTORE_NAME}"
+          echo "decoded keystore: $(stat -c%s "${RUNNER_TEMP}/${KEYSTORE_NAME}") bytes"
+
+      # The RELEASE build type: not debuggable. The gradle file refuses to run
+      # this task with any PROMPTSHIPPER_RELEASE_* missing, so an unset secret
+      # fails here rather than producing an unsigned APK.
+      - name: Assemble release APK
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PROMPTSHIPPER_RELEASE_KEYSTORE="${RUNNER_TEMP}/${KEYSTORE_NAME}"
+          export PROMPTSHIPPER_RELEASE_STORE_PASSWORD="${ANDROID_RELEASE_STORE_PASSWORD}"
+          export PROMPTSHIPPER_RELEASE_KEY_ALIAS="${ANDROID_RELEASE_KEY_ALIAS}"
+          export PROMPTSHIPPER_RELEASE_KEY_PASSWORD="${ANDROID_RELEASE_KEY_PASSWORD}"
+          ./gradlew :app:assembleRelease --no-daemon
+
+      # ---------------------------------------------------------------- GATE 2
+      # 🔴 NOTHING IS PUBLISHED UNTIL THESE PASS, and they sit between the build
+      # and `gh release create` so a failure aborts the job instead of
+      # producing a release that has to be deleted.
+      - name: Gate — the APK's signer is the expected certificate
+        run: |
+          scripts/assert-apk-signer.sh \
+            app/build/outputs/apk/release/app-release.apk \
+            "${EXPECTED_SIGNER_SHA256}"
+
+      - name: Gate — the APK is not debuggable
+        run: scripts/assert-apk-not-debuggable.sh app/build/outputs/apk/release/app-release.apk
+
+      - name: Name the artifact after the tag
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/release/app-release.apk \
+             "${RUNNER_TEMP}/promptshipper-${GITHUB_REF_NAME#android-}.apk"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            "${RUNNER_TEMP}/promptshipper-${GITHUB_REF_NAME#android-}.apk" \
+            --title "promptshipper Android ${GITHUB_REF_NAME#android-}" \
+            --generate-notes
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/${KEYSTORE_NAME}"

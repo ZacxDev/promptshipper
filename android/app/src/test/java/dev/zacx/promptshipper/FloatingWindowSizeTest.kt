@@ -1,0 +1,345 @@
+package dev.zacx.promptshipper
+
+import android.app.Activity
+import android.view.Gravity
+import android.view.ViewGroup
+import android.view.WindowManager
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * Every floating overlay activity's window is capped at
+ * [R.fraction.overlay_width_fraction] of the display width.
+ *
+ * ## 🔴 What is measured: the window ATTRIBUTE, not a rendered pixel
+ *
+ * Robolectric has no window manager and lays nothing out for real, so this
+ * reads `activity.window.attributes.width` — the value Dicta *asked* for. It is
+ * evidence that the request was made with the right number, and nothing more:
+ * it cannot see a platform that ignores the request, a decor inset, or what the
+ * card looks like. On-device width is verified on hardware and reported
+ * separately.
+ *
+ * That gap is not academic — it is exactly how the defect below shipped.
+ *
+ * ## 🔴 The defect this file is a regression test for
+ *
+ * `@style/Theme.Dicta.Overlay` makes a window floating, i.e. `WRAP_CONTENT`,
+ * and nothing in the theme can cap it (`windowFixedWidthMinor`/`Major` are
+ * private platform attributes). So `match_parent` in the layout matches the
+ * WINDOW, and the window's width is whatever its widest `wrap_content` child
+ * wants.
+ *
+ *  * **`SnipPickerActivity` (issue #38, shipped in 0.4.0) never applied the
+ *    cap.** On a Galaxy S21 the picker rendered at roughly a FIFTH of the
+ *    screen width — the width of its one-word `SNIPPETS` heading — truncating
+ *    every row label to about six characters. The [snipPicker…] cases below are
+ *    **real regression coverage**: they are red at `4a0ad3e`, the release
+ *    commit, and green here. The matrix and the observed failure message are in
+ *    the pull request.
+ *  * `DictateActivity`'s half is **not** a regression test and is not labelled
+ *    as one. This file could not be run against the tree that predates the
+ *    overlay redesign — it did not exist there, and neither did
+ *    `R.fraction.overlay_width_fraction` or `R.id.dictate_card`, so "red at
+ *    base" would be a compile error rather than a guard watched going red. What
+ *    WAS observed for it is a hand-rolled partial revert: deleting the sizing
+ *    call from `onCreate`.
+ *
+ * ## Why four configurations each
+ *
+ * A layout verified at one size is a claim about one size. These assertions are
+ * also the end-to-end check on the 0.92 / 0.62 / 0.70 / 0.50 literals — they
+ * read `attrs.width / displayWidth` off a real activity, so there is
+ * deliberately no separate resource-value test of the same four numbers.
+ *
+ * 🔴 Every expected value is distinct from `MATCH_PARENT` (-1), from
+ * `WRAP_CONTENT` (-2) and from the display width itself (1134≠1233,
+ * 1700≠2742, 1120≠1600, 1280≠2560), so no assertion here can pass by
+ * coincidence. That property is enforced by [assertCappedAt] itself, which
+ * asserts all three against the LIVE activity under the real qualifier — not
+ * by a separate test, and the deletion note further down says why the separate
+ * test was removed rather than kept.
+ *
+ * The set of activities that must appear in this file is not a judgement call:
+ * `FloatingOverlaySeamLedgerTest` derives it from the manifest's
+ * `android:theme` and fails when it grows or shrinks.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class FloatingWindowSizeTest {
+
+    // --- the transcription card ---------------------------------------------
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-port-xxhdpi")
+    fun dictateCardPhonePortrait() = assertCappedAt(DictateActivity::class.java, 0.92f)
+
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun dictateCardPhoneLandscape() = assertCappedAt(DictateActivity::class.java, 0.62f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w800dp-h1200dp-port-xhdpi")
+    fun dictateCardTabletPortrait() = assertCappedAt(DictateActivity::class.java, 0.70f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w1280dp-h800dp-land-xhdpi")
+    fun dictateCardTabletLandscape() = assertCappedAt(DictateActivity::class.java, 0.50f)
+
+    // --- the snippet picker: the surface that shipped UNSIZED ----------------
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-port-xxhdpi")
+    fun snipPickerPhonePortrait() = assertCappedAt(SnipPickerActivity::class.java, 0.92f)
+
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun snipPickerPhoneLandscape() = assertCappedAt(SnipPickerActivity::class.java, 0.62f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w800dp-h1200dp-port-xhdpi")
+    fun snipPickerTabletPortrait() = assertCappedAt(SnipPickerActivity::class.java, 0.70f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w1280dp-h800dp-land-xhdpi")
+    fun snipPickerTabletLandscape() = assertCappedAt(SnipPickerActivity::class.java, 0.50f)
+
+    // --- the history picker: the surface that INHERITS the sizing ------------
+    //
+    // 🔴 Added because FloatingOverlaySeamLedgerTest's OWN failure message
+    // demands it — "Ledger the new activity here AND give it a case in
+    // FloatingWindowSizeTest" — and nothing enforced the second half. The
+    // history picker had been ledgered WITHOUT these four, so the ledger read
+    // as coverage while the only behavioural check on the new activity's
+    // window was its absence.
+    //
+    // 🔴 INVARIANT GUARDS, not regression coverage, and the distinction is
+    // sharper here than for the snip cases above: HistoryPickerActivity
+    // arrives with this change, so there is no tree on which these could be
+    // watched going red — a run at the base commit is a compile error.
+    //
+    // What makes them worth having anyway is that this activity does NOT make
+    // the sizing call itself — it INHERITS it from FloatingPickerActivity.
+    // That is a different claim from the snip cases, which were written when
+    // the call sat in each activity's own onCreate, and it is the claim a
+    // structural ledger cannot make: a check on the superclass type-checks
+    // past a shell that stopped sizing. The mutant that deletes the shell's
+    // one call is what shows both halves can see it.
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-port-xxhdpi")
+    fun historyPickerPhonePortrait() = assertCappedAt(HistoryPickerActivity::class.java, 0.92f)
+
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun historyPickerPhoneLandscape() = assertCappedAt(HistoryPickerActivity::class.java, 0.62f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w800dp-h1200dp-port-xhdpi")
+    fun historyPickerTabletPortrait() = assertCappedAt(HistoryPickerActivity::class.java, 0.70f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w1280dp-h800dp-land-xhdpi")
+    fun historyPickerTabletLandscape() =
+        assertCappedAt(HistoryPickerActivity::class.java, 0.50f)
+
+    // --- the shared-clipboard picker: the THIRD surface to inherit it --------
+    //
+    // 🔴 Added for the same reason as the history block above, and the ledger's
+    // own failure message demands them: `FloatingOverlaySeamLedgerTest` gained
+    // `.ClipPickerActivity` in this change, and a ledger entry without a
+    // behavioural case is a guard that reads as coverage while providing none.
+    //
+    // 🔴 INVARIANT GUARDS, not regression coverage — the activity arrives with
+    // this change, so there is no tree these could be watched going red on; a
+    // run at the base commit is a compile error.
+    //
+    // 🔴 THEY MUST NOT OPEN A SOCKET. `assertCappedAt` builds the activity with
+    // no seams, and for this picker a plain `setup()` would reach the real
+    // `ClipHttp` against the mesh host — which, from a workstation on the mesh,
+    // may actually CONNECT. A sizing test that talks to the operator's live
+    // clipboard is not a sizing test, so these four go through
+    // [assertClipPickerCappedAt], which injects a source and a flush and
+    // nothing else.
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-port-xxhdpi")
+    fun clipPickerPhonePortrait() = assertClipPickerCappedAt(0.92f)
+
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun clipPickerPhoneLandscape() = assertClipPickerCappedAt(0.62f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w800dp-h1200dp-port-xhdpi")
+    fun clipPickerTabletPortrait() = assertClipPickerCappedAt(0.70f)
+
+    @Test
+    @Config(qualifiers = "sw600dp-w1280dp-h800dp-land-xhdpi")
+    fun clipPickerTabletLandscape() = assertClipPickerCappedAt(0.50f)
+
+    /**
+     * [assertCappedAt] for the clip picker, with its two network seams stubbed.
+     *
+     * The rows are non-empty deliberately: an empty list hides the ListView and
+     * shows the empty state, and the window's width must be the display's
+     * fraction either way — but a fixture that only ever rendered the empty
+     * state would be measuring a different view tree from the one users see.
+     */
+    private fun assertClipPickerCappedAt(expectedFraction: Float) {
+        val controller = Robolectric.buildActivity(ClipPickerActivity::class.java)
+        controller.get().flush = {}
+        controller.get().remote = object : SharedClipSource {
+            override fun rows(): List<Clip> = listOf(
+                Clip(1L, "a clip from another machine", "laptop", 1_700_000_000_000L)
+            )
+            override fun fetch(): ClipFetch = ClipFetch.Rows(rows())
+            override fun delete(id: Long): Boolean = false
+        }
+        controller.get().loadExecutor = java.util.concurrent.Executor { it.run() }
+        controller.setup()
+        assertWindowCapped(controller, ClipPickerActivity::class.java, expectedFraction)
+    }
+
+    private fun <A : Activity> assertCappedAt(clazz: Class<A>, expectedFraction: Float) =
+        assertWindowCapped(
+            Robolectric.buildActivity(clazz).setup(),
+            clazz,
+            expectedFraction,
+        )
+
+    /**
+     * The window assertions, over an activity someone else has already built.
+     *
+     * 🔴 Extracted from [assertCappedAt] rather than copied, because the clip
+     * picker needs its seams injected BEFORE `setup()` and a second copy of
+     * these checks is a second definition of "sized" — one of which would
+     * inevitably stop matching the other. [assertCappedAt] is now this function
+     * plus the plain build it always did, so the existing eight cases assert
+     * exactly what they asserted before.
+     */
+    private fun <A : Activity> assertWindowCapped(
+        controller: org.robolectric.android.controller.ActivityController<A>,
+        clazz: Class<A>,
+        expectedFraction: Float,
+    ) {
+        try {
+            val activity = controller.get()
+            val name = clazz.simpleName
+            val displayWidth = activity.resources.displayMetrics.widthPixels
+            val attrs = activity.window.attributes
+
+            assertTrue("display width came back as $displayWidth", displayWidth > 0)
+
+            // Not WRAP_CONTENT / MATCH_PARENT — an explicit pixel cap. Both
+            // sentinels are negative, so `> 0` excludes them; they are named
+            // individually because the failure messages are what a maintainer
+            // reads, and "it is still WRAP_CONTENT" is the diagnosis.
+            assertNotEquals(
+                "$name's window width is WRAP_CONTENT, so the window was never " +
+                    "sized and its width collapses to the widest wrap_content " +
+                    "child — a one-word heading, in the picker's case. This is " +
+                    "the 0.4.0 defect verbatim.",
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                attrs.width,
+            )
+            assertNotEquals(
+                "$name's window width is MATCH_PARENT, which on a floating " +
+                    "window is not the cap this file is about",
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                attrs.width,
+            )
+            assertTrue(
+                "$name's window width is ${attrs.width}; the window was never " +
+                    "sized, so the decor is still measured at " +
+                    "AT_MOST(display) and the card's width is decided by its " +
+                    "content rather than by the display",
+                attrs.width > 0
+            )
+            assertTrue(
+                "$name's window width ${attrs.width} is not narrower than the " +
+                    "$displayWidth px display — the card still spans edge to edge",
+                attrs.width < displayWidth
+            )
+            assertEquals(
+                "$name's window/display ratio",
+                expectedFraction,
+                attrs.width.toFloat() / displayWidth,
+                0.005f
+            )
+
+            // Height stays content-driven: a fixed height would either clip the
+            // card or leave it tall and empty.
+            assertEquals(
+                "$name's window height is not WRAP_CONTENT",
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                attrs.height,
+            )
+
+            // Centred, so the margin is on all sides rather than one.
+            assertEquals("$name's window gravity", Gravity.CENTER, attrs.gravity)
+        } finally {
+            controller.close()
+        }
+    }
+
+    /*
+     * 🔴 DELETED (round 0, D1): `theExpectedWidthsCannotBeHitByAccident`.
+     *
+     * It claimed to be the control on the assertions above — that each expected
+     * width is a number nothing else in the computation can produce. It was a
+     * TAUTOLOGY: it rebuilt `expected` from its OWN copied literals
+     * (1233 × 0.92f, …) and asserted the product was not -1, -2 or the display
+     * width. For any 0 < fraction < 1 and displayWidth > 0 the product is
+     * always in [0, displayWidth), so all four assertions were arithmetically
+     * guaranteed. It read neither the `@Config` qualifiers nor
+     * `R.fraction.overlay_width_fraction`, so no change to either could ever
+     * redden it — the only reachable failure was editing its own literal list.
+     *
+     * Its kdoc said it "pins that property rather than leaving it to arithmetic
+     * in a comment". Backwards: it MOVED the arithmetic into a test that cannot
+     * fail, which reads as coverage while providing none — the worse outcome,
+     * because it stops anyone looking.
+     *
+     * Nothing is lost. `assertCappedAt` already asserts all three properties
+     * against a REAL activity under the REAL qualifier: not WRAP_CONTENT, not
+     * MATCH_PARENT, and strictly narrower than the display. Those run against
+     * live resources, so a fraction edited to 100% reddens them — which the
+     * deleted test could not see.
+     */
+
+    /**
+     * The card must be inside a scroll container, or a landscape phone clips the
+     * action row off the bottom of a WRAP_CONTENT dialog.
+     */
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun theCardScrollsRatherThanClipping() {
+        val controller = Robolectric.buildActivity(DictateActivity::class.java).setup()
+        try {
+            val card = controller.get().findViewById<android.view.View>(R.id.dictate_card)
+            var parent = card.parent
+            var found = false
+            while (parent is android.view.View) {
+                if (parent is android.widget.ScrollView) {
+                    found = true
+                    break
+                }
+                parent = parent.getParent()
+            }
+            assertTrue(
+                "the dictate card has no ScrollView ancestor; on a short " +
+                    "landscape window the bottom action row would be clipped",
+                found
+            )
+        } finally {
+            controller.close()
+        }
+    }
+}

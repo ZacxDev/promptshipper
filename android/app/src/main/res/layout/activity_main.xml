@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The setup screen, restyled by the 2026-10 design pass to the surface ramp in
+  colors.xml.
+
+  Structural change: the flat run of TextViews became addressable groups (a
+  masthead, Permissions, Floating bubble), with the rows drawn as level-1 panels
+  (@drawable/row_bg) over the level-0 window.
+
+  🔴 The screen is now STATUS + ONE SWITCH + A LINK, and nothing else. The ids
+  MainActivity addresses, in order: @id/mic_status, @id/grant_mic_button,
+  @id/overlay_status, @id/grant_overlay_button, @id/bubble_switch,
+  @id/add_tile_button, @id/settings_button.
+
+  Gone with the "trigger via the bubble only" change: @id/notif_switch (which
+  posted a persistent notification carrying a Dictate action) and
+  @id/try_now_button (which opened the overlay and started a capture). Both were
+  ways to start a recording that were not the bubble. Nothing configurable lives
+  here — that is all SettingsActivity's.
+
+  @id/settings_slot, below the bubble group, was a RESERVED empty/GONE
+  FrameLayout for a settings screen on another branch. That branch (remote STT)
+  has landed, so the slot is now FILLED and visible: it holds the blurb plus
+  @id/settings_button, which MainActivity wires to SettingsActivity. Placement
+  is still deliberate — settings is configuration, so it belongs after the
+  things it configures; it is now also the last thing on the screen, because the
+  call to action it used to sit above ("Try dictation now") is deleted. The
+  reserved @string/settings was dropped at that merge in favour of the branch's
+  own @string/open_settings, which is the one the button uses.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/dicta_surface_0"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="32dp"
+        android:paddingBottom="32dp">
+
+        <!-- Masthead. The accent mic glyph is the only place the icon's artwork
+             appears in-app, which is what ties the launcher icon to the app. -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:baselineAligned="false">
+
+            <ImageView
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:src="@drawable/ic_mic"
+                android:tint="@color/dicta_accent"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="@string/app_name"
+                android:textSize="30sp"
+                android:textStyle="bold"
+                android:letterSpacing="-0.01"
+                android:textColor="@color/dicta_on_surface" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/intro"
+            android:textSize="14sp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="@color/dicta_on_surface_variant" />
+
+        <!-- ===== Server =====
+             promptshipper ships knowing no server. Until it is paired this row
+             says so and offers @id/pair_button, which opens PairingActivity;
+             afterwards it names the paired transcription host. First on the
+             screen because nothing remote works before it. MainActivity fills
+             @id/server_status on every onResume. -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/section_server" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:id="@+id/server_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/server_unpaired"
+                android:textSize="15sp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <Button
+                android:id="@+id/pair_button"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginTop="10dp"
+                android:minWidth="110dp"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/pair_button" />
+        </LinearLayout>
+
+        <!-- ===== Permissions ===== -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/section_permissions" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp"
+            android:gravity="center_vertical"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/mic_row"
+                    android:textSize="15sp"
+                    android:textColor="@color/dicta_on_surface" />
+
+                <TextView
+                    android:id="@+id/mic_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/status_not_granted"
+                    android:textSize="13sp"
+                    android:textColor="@color/dicta_on_surface_variant" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/grant_mic_button"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="12dp"
+                android:minWidth="88dp"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/grant" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp"
+            android:gravity="center_vertical"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/overlay_row"
+                    android:textSize="15sp"
+                    android:textColor="@color/dicta_on_surface" />
+
+                <TextView
+                    android:id="@+id/overlay_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/status_not_granted"
+                    android:textSize="13sp"
+                    android:textColor="@color/dicta_on_surface_variant" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/grant_overlay_button"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="12dp"
+                android:minWidth="88dp"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/grant" />
+        </LinearLayout>
+
+        <!-- ===== Floating bubble =====
+             Was "Triggers (pick any)", a heading over three rows: the tile, the
+             bubble, and a persistent notification. There is only one trigger
+             now — the bubble — so there is no list to pick from. The tile row
+             stays because the tile is no longer a trigger of its own: it
+             toggles THIS bubble from the shade (DictaTileService reads the same
+             BubbleEnabled flag as the switch below), which makes it a bubble
+             control and puts it in this group. The switch comes first: it is
+             the thing the section is about, and the tile is a way to reach it. -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/section_bubble" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp"
+            android:gravity="center_vertical"
+            android:baselineAligned="false">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/bubble_row"
+                android:textSize="15sp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <Switch
+                android:id="@+id/bubble_switch"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginStart="12dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/tile_row"
+                android:textSize="15sp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <Button
+                android:id="@+id/add_tile_button"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginTop="10dp"
+                android:minWidth="110dp"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/add_tile" />
+        </LinearLayout>
+
+        <!--
+          🔴 THE RESERVATION IS NOW FILLED. @id/settings_slot was an empty, GONE
+          FrameLayout reserved by the design pass for exactly this control; the
+          remote-STT work supplies it. Filled by the protocol the file header
+          lays down — "drop the entry row in as its child, flip visibility to
+          visible" — so the slot keeps its id and its deliberate placement
+          (after the triggers it configures, before the call to action) and the
+          control inside it is real: MainActivity gives @id/settings_button a
+          listener that starts SettingsActivity.
+
+          Styled to this screen's secondary convention (@drawable/outline_button_bg,
+          44dp, 110dp minWidth, no state-list animator, no caps) and NOT to
+          @drawable/mic_pill_bg: the accent fill means "dictate", and Settings
+          is not a dictation affordance.
+
+          The inner LinearLayout is load-bearing, not decoration — a FrameLayout
+          STACKS its children, so the blurb and the button would draw on top of
+          one another as direct children of the slot.
+        -->
+        <FrameLayout
+            android:id="@+id/settings_slot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/settings_row"
+                    android:textSize="13sp"
+                    android:lineSpacingExtra="3dp"
+                    android:textColor="@color/dicta_on_surface_variant" />
+
+                <Button
+                    android:id="@+id/settings_button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="10dp"
+                    android:minWidth="110dp"
+                    android:background="@drawable/outline_button_bg"
+                    android:stateListAnimator="@null"
+                    android:textAllCaps="false"
+                    android:textColor="@color/dicta_on_surface"
+                    android:text="@string/open_settings" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- 🔴 @id/try_now_button ("Try dictation now") WAS HERE AND IS DELETED,
+             string and all. It opened @id/mic_button's old sibling — a plain
+             DictateActivity launch, which auto-starts a capture in onCreate —
+             and so was a second way to start a recording. The floating bubble's
+             tap is the only one now. It was also the only accent-filled
+             (@drawable/mic_pill_bg) control on this screen, which is why this
+             screen now has NO accent fill: the accent means "dictate", and
+             nothing here dictates. `OverlayMinimalLayoutTest` asserts that
+             absence over the whole tree rather than over one id, so the control
+             cannot come back under another name. -->
+    </LinearLayout>
+</ScrollView>

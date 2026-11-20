@@ -1,0 +1,843 @@
+package dev.zacx.promptshipper
+
+import android.content.Context
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import java.io.File
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * One dictation: capture, the on-device recogniser, the upload, and the
+ * three-tier degradation between them.
+ *
+ * ## The contract with the UI
+ *
+ * Whatever happens, [Callbacks.onTranscript] is called at least once if
+ * *either* engine produced text, and it always says **which engine** produced
+ * what it is handing over. A remote transcript replaces a local one; a local
+ * transcript is never thrown away on the expectation that a remote one is
+ * coming.
+ *
+ * ## The three tiers
+ *
+ * 1. **[AudioCaptureLogic.Tier.LOCAL_PARTIALS_AND_REMOTE]** —
+ *    `EXTRA_AUDIO_SOURCE` honoured. Live partials from the phone while
+ *    recording, then the server's more accurate transcript replaces them.
+ * 2. **[AudioCaptureLogic.Tier.REMOTE_ONLY_AFTER_TIMEOUT]** — the extra was
+ *    accepted but no partial arrived within
+ *    [AudioCaptureLogic.FIRST_PARTIAL_TIMEOUT_MS] *while non-zero PCM was
+ *    being written*. Recognition is cancelled, recording continues, the level
+ *    meter carries the feedback, and the transcript is remote-only.
+ * 3. **[AudioCaptureLogic.Tier.REMOTE_ONLY_NO_API]** — `SDK_INT < 33`. Same
+ *    behaviour as tier 2, decided up front.
+ *
+ * 🔴 Tiers 2 and 3 exist because `EXTRA_AUDIO_SOURCE` support is **optional
+ * per recogniser implementation** and an implementation that ignores it does
+ * so *silently* — it just opens the microphone, which we already hold, and
+ * then receives the exact zeros Android feeds the loser of mic arbitration.
+ * There is no capability flag to query, so the tier is detected at runtime.
+ */
+class DictationSession(
+    context: Context,
+    private val settings: SttSettings,
+    private val callbacks: Callbacks,
+    /** Overridable for tests; production uses the real device locale. */
+    private val locale: Locale = Locale.getDefault(),
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
+    /**
+     * Where a finished recording is filed for history. Injectable so a test can
+     * hand over a temp dir and a fake clock — and so the sessions built by the
+     * existing tests, which care about tiers and gates rather than about
+     * history, keep working unchanged.
+     */
+    private val history: DictationHistoryStore = DictationHistoryStore(context),
+    /**
+     * Builds the upload path for one finished recording.
+     *
+     * 🔴 Injected for ONE reason: the `updateText` calls in the
+     * [RemoteTranscriber.Events] handlers below are the only thing that
+     * replaces history's on-device first guess with the transcript the user
+     * actually saw. With the transcriber constructed inline, reaching
+     * [RemoteTranscriber.Events.onRemoteTranscript] needed a real server, so
+     * that wiring was covered by nothing while both of its sides — the store's
+     * [DictationHistoryStore.updateText] and the ladder itself — were
+     * separately green. A defect living only in the join means history keeps
+     * the worse transcript forever, silently and with no error.
+     *
+     * The default is the construction this line replaced, argument for
+     * argument, and it is still called **per `transcribeRemotely` call** — a
+     * single injected instance would change the per-call
+     * [RemoteTranscriber.Transport] and [UploadBudget] lifetime that
+     * `RemoteTranscriberTest` pins.
+     */
+    private val transcriberFactory: (Context, SttSettings, Locale) -> RemoteTranscriber =
+        { context_, settings_, locale_ -> RemoteTranscriber(context_, settings_, locale_) },
+    /**
+     * Runs [destroy]'s history cleanup off the calling thread.
+     *
+     * 🔴 Injected for ONE reason, and it is a test-determinism one rather than
+     * a product one. Since the cleanup moved onto a thread, a test asserting
+     * that `destroy()` took an entry back out has nothing to wait on but wall
+     * time — `DictationSessionHistoryCaptureTest` was doing exactly that, and
+     * `Thread.sleep(100)` against an un-joined daemon passes almost always and
+     * flakes opaquely. A test passes a wrapper that counts a latch down once
+     * the block has returned, so it waits on the cleanup's actual completion.
+     *
+     * The default is [runHistoryCleanup], whose off-thread property stays
+     * pinned by
+     * `DictationSessionHistoryCaptureTest.historyCleanupNeverRunsOnTheCallersThread`
+     * — that test drives the companion function directly, so it still covers
+     * what production gets. What neither it nor this seam pins is that
+     * `destroy()` *calls* this at all; see the note on [runHistoryCleanup].
+     */
+    private val historyCleanup: (() -> Unit) -> Unit = { runHistoryCleanup(it) },
+    /**
+     * The opt-in "send each dictation to my clip feed" ([DictationClipFeed]).
+     * Offered the final text exactly once per dictation; it decides, from the
+     * setting, whether anything is queued.
+     */
+    private val clipFeed: DictationClipFeed = DictationClipFeed.create(context),
+) {
+
+    interface Callbacks {
+        /**
+         * @param text the transcript.
+         * @param fromRemote true when the self-hosted service produced it,
+         *   false when the phone did. 🔴 Not cosmetic: the two engines
+         *   disagree, so the UI must be able to tell the user which one is on
+         *   screen.
+         * @param isFinal false for a live partial.
+         */
+        fun onTranscript(text: String, fromRemote: Boolean, isFinal: Boolean)
+
+        /** Status line text, already localised and secret-free. */
+        fun onStatus(text: String)
+
+        /** Normalised `[0, 1]` microphone level for the meter. */
+        fun onLevel(level: Double)
+
+        /** The tier actually in force, once known. */
+        fun onTier(tier: AudioCaptureLogic.Tier)
+
+        /** The platform is feeding us silence; surfaced as a real UI state. */
+        fun onClientSilenced(silenced: Boolean)
+
+        /** Recording stopped (so the UI can flip the mic button back). */
+        fun onRecordingStopped()
+
+        /**
+         * The recording has been filed into history under [id], so its audio
+         * can be re-read — which is what makes *Retry* and *Save audio*
+         * possible on a live card rather than only on a history one.
+         *
+         * Fires **after** the copy and the index write have both succeeded, so
+         * a receiver may assume the audio is readable. It does **not** fire
+         * when the entry was not written (a cancel, a destroyed session, or a
+         * full disk), and a card must therefore treat "never called" as "no
+         * audio to act on" rather than waiting for it.
+         *
+         * 🔴 **Deliberately has no default implementation.** A no-op default
+         * would compile everywhere and be silently dropped by
+         * [BubbleSessionBus], which is a *relay*: a callback it does not
+         * explicitly forward never reaches the card attached to it, and the
+         * failure is invisible — the control simply never appears. Making it
+         * abstract forces each of the three implementers to decide.
+         */
+        fun onHistorySaved(id: String)
+    }
+
+    private val appContext = context.applicationContext
+    private val main = Handler(Looper.getMainLooper())
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
+
+    private var capture: MicCapture? = null
+    private var speech: SpeechHelper? = null
+    private var audioFile: File? = null
+
+    private val sawPartial = AtomicBoolean(false)
+    private val recording = AtomicBoolean(false)
+    private var localTranscript: String = ""
+    private var tier: AudioCaptureLogic.Tier =
+        AudioCaptureLogic.Tier.LOCAL_PARTIALS_AND_REMOTE
+
+    val isRecording: Boolean get() = recording.get()
+
+    private val uploadSuppressed = AtomicBoolean(false)
+
+    /**
+     * The history entry this session has filed but not yet handed to the
+     * upload ladder, so [destroy] can take it back out.
+     *
+     * 🔴 This is where "a destroyed session keeps nothing" is actually
+     * decided, and it is deliberately NOT "whatever this session last filed".
+     * `destroy()` runs on every *successfully completed* session too —
+     * `BubbleService` parks a submitted session in `submitted` and destroys it
+     * when the next recording starts — so a `destroy()` that deleted the last
+     * filed id unconditionally would delete the history entry of every
+     * dictation the user actually completed. That would not close the window;
+     * it would delete the feature.
+     *
+     * So the id is held only for the interval in which nothing else can
+     * collect it: set just before `worker.execute`, cleared by the task itself
+     * as its first action. Three outcomes, resolved by an atomic on this field
+     * rather than by timing — in all but one window, which the atomic does not
+     * resolve and which [destroy] names where it reads the field:
+     *
+     *  * the enqueue is **rejected** — `destroy()` already shut the worker
+     *    down. The catch at the enqueue clears the id and deletes.
+     *  * the task is **accepted but drained** by `shutdownNow()` and never
+     *    runs. Nothing clears the id, so `destroy()` sees it and deletes. This
+     *    is the instant the `RejectedExecutionException` catch cannot see, and
+     *    it is the whole reason this field exists.
+     *  * the task **starts**. It clears the id, and the ladder owns the entry
+     *    from then on.
+     *
+     * ⚠ So the absolute "a destroyed session keeps nothing" stays **false**,
+     * and must not be written here again. A `destroy()` landing after the task
+     * has started keeps the entry — deliberately, and pinned by
+     * `DictationSessionHistoryCaptureTest.aRecordingWhoseUploadHasStartedSurvivesDestroy`:
+     * the user submitted that recording, the ladder is running, and
+     * `shutdownNow()`'s interrupt does not unblock its socket read anyway. The
+     * true claim is the narrower one: **a session destroyed before its
+     * recording reached the upload keeps nothing.**
+     */
+    private val pendingHistoryId = AtomicReference<String?>(null)
+
+    /**
+     * 🔴 Closes the **class**, not just the instance's capture.
+     *
+     * `destroy()` does `worker.shutdownNow()` and
+     * `main.removeCallbacksAndMessages(null)`, which only drops messages that
+     * are *already queued*. A worker thread blocked in `http.transcribe()` is
+     * blocked in a socket read, which `shutdownNow`'s interrupt does not
+     * unblock — it can return long afterwards and still run
+     * `main.post { callbacks.onTranscript(..., isFinal = true) }`.
+     *
+     * Delivered to [BubbleService], that late `isFinal` drives
+     * `TranscriptSettled → toIdle()` on the state machine of a *different,
+     * live* recording: IDLE with the microphone open, no pulse ring, no cancel
+     * button, the FGS left promoted, and `onMaxDuration()` inert in IDLE so the
+     * two-minute cap never fires. The generation gate in `BubbleService` is the
+     * other half; this is the half that belongs to the dead session itself, so
+     * every consumer gets it, including ones added later.
+     */
+    private val destroyed = AtomicBoolean(false)
+
+    /** True once [destroy] has run. */
+    val isDestroyed: Boolean get() = destroyed.get()
+
+    /**
+     * Every callback that is *deferred* goes through [postToMain] or
+     * [postToMainDelayed], so "a destroyed session delivers nothing late" is a
+     * property of two routes in this file rather than of N remembered checks.
+     * Gated at **delivery** time, not post time, so the check reads the
+     * session's state when the block would run rather than when it was posted.
+     *
+     * 🔴 That is *not* the whole hazard, which this sentence used to claim.
+     * [destroy] calls `main.removeCallbacksAndMessages(null)`, so a message
+     * posted while alive and still pending at death is **deleted**, not merely
+     * gated — the gate never sees it. What the gate actually covers is the case
+     * `removeCallbacksAndMessages` cannot: a `post` that lands *after*
+     * `destroy()` has already swept the queue, i.e. a worker or recogniser
+     * callback thread that raced the teardown. Narrower than the old wording,
+     * and the only reading under which these two routes earn their keep.
+     *
+     * 🔴 The precise claim, because an earlier version of this comment
+     * overstated it. Three callbacks are *not* deferred — the `onStatus` calls
+     * in [start] and the `onRecordingStopped` in [stop] — and they are instead
+     * on paths that cannot run after `destroy()`: `start()` returns at its
+     * `destroyed` check before either status, and `stop()`'s is explicitly
+     * guarded. The recogniser's own `onPartial`/`onFinal` used to be a fourth,
+     * calling `callbacks.onTranscript` directly (including `isFinal = true`)
+     * from a route with no gate at all; they are routed through [postToMain]
+     * now, which is what makes the sentence above true for every consumer
+     * rather than only for the ones that keep a generation counter of their
+     * own.
+     */
+    private fun postToMain(block: () -> Unit) {
+        main.post { if (!destroyed.get()) block() }
+    }
+
+    /**
+     * [postToMain] with a delay. Separate only because `Handler.postDelayed`
+     * is a different call; the gate is identical and is at delivery.
+     *
+     * ⚠ **Measured: this gate is pinned by nothing, and cannot honestly be.**
+     * A mutation removing the `destroyed` check here leaves the whole suite
+     * green. Two independent reasons:
+     *
+     * 1. [destroy] calls `main.removeCallbacksAndMessages(null)`, which deletes
+     *    every message this session has pending — including a delayed one that
+     *    has not fired. So a message posted *while alive* is not merely gated
+     *    after `destroy()`, it is **gone**, and the gate never runs at all.
+     * 2. Even if it did run, the one caller — the watchdog in
+     *    `MicListener.onFirstAudio` — is already inert: `destroy()` sets
+     *    `capture` to null, so `tierFor` is handed `wroteNonZeroPcm = false`
+     *    and never decides `REMOTE_ONLY_AFTER_TIMEOUT`.
+     *
+     * Reason (2) is what makes the mutant survive: even a post that does land
+     * after `destroy()` runs a block that cannot observe anything, because
+     * `capture` is null. So the check is kept as this route's contract,
+     * identical to [postToMain]'s, and is NOT counted as covered. (The
+     * open-coded check it replaced was equally unpinned; this is a
+     * measurement, not a regression.)
+     *
+     * 🔴 And therefore the residual hazard for [postToMain] and this route is
+     * **a post made after death, not one that outlives it** — the earlier
+     * reading of this note ("a message that was posted while alive and runs
+     * after death") named a hazard `removeCallbacksAndMessages` already
+     * closes. The gate's real value is covering a `post` from a thread that
+     * raced `destroy()`, which is why it stays despite being unpinned.
+     */
+    private fun postToMainDelayed(delayMs: Long, block: () -> Unit) {
+        main.postDelayed({ if (!destroyed.get()) block() }, delayMs)
+    }
+
+    /**
+     * Refuses the upload for the recording currently in progress.
+     *
+     * 🔴 Why a flag rather than "just call [destroy]": `destroy()` stops the
+     * capture, and `MicCapture.stop()` calls `onFinished`, which hands the file
+     * to the worker — so the upload is already submitted by the time `destroy()`
+     * reaches `worker.shutdownNow()`. Whether the POST actually goes out is then
+     * a race, which is not a basis for the feature that needs this to be
+     * certain: the cancel button. "Nothing was uploaded" has to be a promise the
+     * user can rely on, not the likely outcome of a shutdown race.
+     *
+     * Checked in `onFinished` *before* anything is enqueued, so "nothing was
+     * uploaded" is a property of the control flow and not of a timing window.
+     * Cleared by the next [start].
+     */
+    fun suppressUpload() {
+        uploadSuppressed.set(true)
+    }
+
+    // --- start / stop -------------------------------------------------------
+
+    /**
+     * Opens the microphone.
+     *
+     * 🔴 The ownership acquire is the **first** thing, before any platform
+     * call: a second session must not reach `AudioRecord` at all, because
+     * Android would not refuse it — it would feed one of the two exact zeros
+     * with no error. See [MicrophoneOwner].
+     */
+    fun start(): Boolean {
+        if (destroyed.get()) return false
+        if (recording.get()) return true
+        if (!MicrophoneOwner.acquire(this)) {
+            // 🔴 Loud, not swallowed. This status reaches every surface the
+            // session is wired to — the bubble's bus and the card's status line
+            // — and it is the only thing the user can act on. The alternative
+            // is the platform's own answer to a second capture: bit-exact
+            // zeros, no error, and a transcript that comes back empty.
+            callbacks.onStatus(appContext.getString(R.string.stt_mic_in_use))
+            return false
+        }
+        sawPartial.set(false)
+        uploadSuppressed.set(false)
+        localTranscript = ""
+
+        val file = File(
+            appContext.cacheDir,
+            "dictation-${System.currentTimeMillis()}.ogg"
+        )
+        audioFile = file
+
+        val mic = MicCapture(MicListener(), file)
+        capture = mic
+        if (!mic.start()) {
+            capture = null
+            // Nothing is open, so holding the mic here would block every later
+            // recording in this process.
+            //
+            // ⚠ Today this is REDUNDANT with the release in `MicListener.onError`
+            // below: every false return from `MicCapture.start()` calls
+            // `onError` first, so a mutation removing either one alone still
+            // leaves the suite green (measured). It is kept because it is
+            // lexically paired with the `acquire` above and therefore does not
+            // depend on MicCapture's internal contract — do NOT delete it as
+            // "covered"; nothing covers it individually.
+            MicrophoneOwner.release(this)
+            return false
+        }
+        recording.set(true)
+
+        // Tier decided up front when the platform has no EXTRA_AUDIO_SOURCE.
+        if (!AudioCaptureLogic.supportsSharedAudioSource(sdkInt)) {
+            setTier(AudioCaptureLogic.Tier.REMOTE_ONLY_NO_API)
+        } else {
+            startRecognizer(mic)
+        }
+        callbacks.onStatus(appContext.getString(R.string.stt_recording))
+        return true
+    }
+
+    /** Hands the recogniser the pipe's read end, not the microphone. */
+    private fun startRecognizer(mic: MicCapture) {
+        val source = mic.recognizerSource ?: run {
+            // The pipe could not be created; the recogniser would otherwise
+            // open the mic and get zeros.
+            setTier(AudioCaptureLogic.Tier.REMOTE_ONLY_NO_API)
+            return
+        }
+        val helper = SpeechHelper(
+            appContext,
+            object : SpeechHelper.Listener {
+                override fun onReady() {}
+
+                // 🔴 Both forwards go through postToMain, like every other
+                // callback here. They used to call `callbacks` directly — the
+                // one route out of this class with no `destroyed` gate on it,
+                // and the only one that can deliver `isFinal = true`. A
+                // destroyed session's late local final then reached whatever
+                // was listening: BubbleService happens to have a generation
+                // gate of its own, but DictateActivity.SessionCallbacks does
+                // not and writes the card's views.
+                override fun onPartial(text: String) {
+                    sawPartial.set(true)
+                    setTier(AudioCaptureLogic.Tier.LOCAL_PARTIALS_AND_REMOTE)
+                    postToMain {
+                        callbacks.onTranscript(text, fromRemote = false, isFinal = false)
+                    }
+                }
+
+                override fun onFinal(text: String) {
+                    // Not inside the post: this is the session's own state, and
+                    // the fallback ladder reads it from the worker thread when
+                    // the remote path gives up.
+                    localTranscript = text
+                    postToMain {
+                        callbacks.onTranscript(text, fromRemote = false, isFinal = true)
+                    }
+                }
+
+                override fun onError(message: String) {
+                    // Not surfaced as an error: the local engine failing is
+                    // expected in tiers 2 and 3 and the remote path is
+                    // unaffected. The status line is owned by the remote
+                    // ladder, which has something more useful to say.
+                }
+            },
+            // The same DECISION the remote request uses, encoded for
+            // Android rather than for the wire — see
+            // SttSettings.dictationLocaleTag for why these must not be the
+            // same string.
+            language = settings.dictationLocaleTag(locale),
+            sharedSource = source,
+        )
+        if (!helper.isAvailable) {
+            setTier(AudioCaptureLogic.Tier.REMOTE_ONLY_NO_API)
+            return
+        }
+        speech = helper
+        helper.start()
+    }
+
+    /**
+     * Stops capture.
+     *
+     * The recogniser's write end is closed by [MicCapture.stop] — 🔴 which is
+     * what ends the recognition session, because a pipe-fed recogniser does
+     * not endpoint on trailing silence and reads to EOF.
+     */
+    fun stop() {
+        // 🔴 Released here, not in destroy(): the microphone is shut by the
+        // capture?.stop() below, while this session lives on for the upload —
+        // the card is waiting on it. Holding ownership through a retrying POST
+        // would refuse the user's next recording for the whole retry ladder.
+        //
+        // And released BEFORE the not-recording early return, not inside it.
+        // The release is owner-scoped and idempotent, so a redundant stop()
+        // costs nothing — whereas ownership stranded inside a guard refuses
+        // every later recording in the process, which is the strictly worse
+        // failure of the two.
+        MicrophoneOwner.release(this)
+        if (!recording.compareAndSet(true, false)) return
+        speech?.stop()
+        capture?.stop() // -> MicListener.onFinished -> the upload
+        if (!destroyed.get()) callbacks.onRecordingStopped()
+    }
+
+    fun destroy() {
+        destroyed.set(true)
+        recording.set(false)
+        speech?.destroy()
+        speech = null
+        capture?.stop()
+        capture = null
+        MicrophoneOwner.release(this)
+        worker.shutdownNow()
+        main.removeCallbacksAndMessages(null)
+        audioFile?.let { if (it.exists()) it.delete() }
+        // 🔴 AFTER shutdownNow(), which is what decides the answer rather than
+        // merely preceding it: almost always, by the time it returns every
+        // task that will ever run has started (and has therefore already
+        // cleared the id) and everything still queued has been drained, so an
+        // id still here is "filed, and nothing is going to collect it".
+        //
+        // ⚠ "Almost always", not always — the absolute was written here twice
+        // and is false both times. `ThreadPoolExecutor.runWorker` removes a
+        // task from the queue inside `getTask()`, BEFORE calling `task.run()`,
+        // so a task can be dequeued-but-not-yet-started: `shutdownNow()` drains
+        // nothing, the `getAndSet` below returns the id, the entry is deleted,
+        // and the task then runs the full ladder anyway — its `updateText`
+        // silently no-ops on an unknown id and a dictation the user is watching
+        // loses its history entry. ACCEPTED AS UNREACHABLE RATHER THAN CLOSED:
+        // the window is a few instructions wide and `destroy()` is human-driven
+        // teardown. No guard is added for it, deliberately.
+        //
+        // See [pendingHistoryId] for why this is not "the last id filed".
+        pendingHistoryId.getAndSet(null)?.let { id ->
+            // 🔴 NOT inline: destroy() is called from Service/Activity
+            // onDestroy, i.e. on the main thread, and `delete` takes the
+            // store's process-wide monitor and then reads, rewrites and
+            // `fsync`s the index. The monitor can be held by an `add` copying
+            // up to ~2.29 MiB, so inlining this is a main-thread block of
+            // unbounded length on a teardown path — an ANR, not jank. (~1.72
+            // MiB on Opus; the figure was ~352–469 KiB under the old 120 s
+            // recording cap, so the block is now ~5× longer.)
+            //
+            // Fire-and-forget is sound because nothing waits on the result and
+            // the delete is idempotent: the entry is already unreachable from
+            // this session (the id is gone from the field), `history.delete`
+            // is a no-op for an unknown id, and the store's own monitor
+            // serialises it against any other writer.
+            //
+            // 🔴 The cost is that the delete is **best-effort, and lost if the
+            // process dies first** — NOT, as this comment used to say, that
+            // "keeps nothing" becomes true "shortly after" destroy(). On the
+            // `BubbleService.onDestroy` path the process is often killed
+            // immediately afterwards, and the cleanup thread is `isDaemon =
+            // true` so nothing holds the process open for it; the delete must
+            // also first take the store's process-wide monitor, which an
+            // in-flight `add` can hold while copying. So "shortly after" can be
+            // **never**, leaving exactly the kept recording this cleanup exists
+            // to remove. The daemon flag stays anyway: a non-daemon thread
+            // would hold up a process the system is trying to end, which is the
+            // worse of the two failures.
+            historyCleanup { runCatching { history.delete(id) } }
+        }
+    }
+
+    private fun setTier(next: AudioCaptureLogic.Tier) {
+        if (tier == next) return
+        tier = next
+        postToMain { callbacks.onTier(next) }
+    }
+
+    // --- the capture listener ----------------------------------------------
+
+    private inner class MicListener : MicCapture.Listener {
+
+        override fun onLevel(level: Double) {
+            postToMain { callbacks.onLevel(level) }
+        }
+
+        override fun onClientSilenced(silenced: Boolean) {
+            postToMain {
+                callbacks.onClientSilenced(silenced)
+                if (silenced) {
+                    callbacks.onStatus(
+                        appContext.getString(R.string.stt_mic_silenced)
+                    )
+                }
+            }
+        }
+
+        /**
+         * Arms the partial-result watchdog.
+         *
+         * Armed from the **first non-zero frame**, not from the start of
+         * recording: timing it from `start()` would cancel recognition every
+         * time the user took more than 1.5 s to begin speaking, which is most
+         * of the time.
+         */
+        override fun onFirstAudio() {
+            // postToMainDelayed, not a second open-coded `destroyed` check:
+            // the gate belongs to the two posting routes, not to each caller.
+            postToMainDelayed(AudioCaptureLogic.FIRST_PARTIAL_TIMEOUT_MS) {
+                val decided = AudioCaptureLogic.tierFor(
+                    sdkInt = sdkInt,
+                    sawPartial = sawPartial.get(),
+                    wroteNonZeroPcm = capture?.hasNonZeroAudio == true,
+                    elapsedSincePcmMs = capture?.millisSinceFirstAudio ?: 0L,
+                )
+                if (decided == AudioCaptureLogic.Tier.REMOTE_ONLY_AFTER_TIMEOUT) {
+                    // Cancel, not stop: stop() asks for a final result from a
+                    // session we have concluded is dead. Recording continues.
+                    speech?.cancel()
+                    setTier(decided)
+                    callbacks.onStatus(
+                        appContext.getString(R.string.stt_tier_remote_only)
+                    )
+                }
+            }
+        }
+
+        override fun onError(message: String) {
+            recording.set(false)
+            // The microphone never opened (or has just died); another session
+            // must be able to take it. Pinned by
+            // MicrophoneOwnershipTest.aCaptureErrorReleasesTheMicrophone —
+            // driven through this listener rather than through start(), see the
+            // note on the release in start()'s own failure branch.
+            MicrophoneOwner.release(this@DictationSession)
+            postToMain {
+                callbacks.onStatus(message)
+                callbacks.onRecordingStopped()
+            }
+        }
+
+        override fun onFinished(file: File?, audioSeconds: Double) {
+            // 🔴 Before everything: destroy() stops the capture, which lands
+            // here. Enqueueing on an executor destroy() is about to
+            // shutdownNow() made "was it uploaded" a race. A destroyed session
+            // uploads nothing and says nothing.
+            //
+            // 🔴 The third clause this comment used to carry — "and keeps
+            // nothing" — is an absolute and was false twice over, so it is
+            // gone from here on purpose. What is kept is decided by `destroy()`
+            // and `pendingHistoryId`, not by this gate and not by the enqueue
+            // below, and the true form of the claim is narrower than the
+            // absolute: see `pendingHistoryId`.
+            //
+            // ⚠ This gate is the fast path, not the whole mechanism — it reads
+            // the flag before up to ~2.29 MiB of file IO (~1.72 MiB on Opus;
+            // ~352–469 KiB under the old 120 s cap). The cases where destroy()
+            // lands *during* or *after* that IO are covered at the enqueue
+            // below and in destroy() respectively.
+            if (destroyed.get()) {
+                file?.let { if (it.exists()) it.delete() }
+                return
+            }
+            // 🔴 Before the null/duration check and before anything is enqueued:
+            // the caller asked for this recording NOT to be transcribed (the
+            // cancel button, or a service teardown), so it must not reach the
+            // service and must not announce a status it will never deliver.
+            if (uploadSuppressed.get()) {
+                file?.let { if (it.exists()) it.delete() }
+                return
+            }
+            if (file == null || audioSeconds <= 0.0) {
+                postToMain {
+                    callbacks.onStatus(appContext.getString(R.string.stt_no_audio))
+                }
+                return
+            }
+            // 🔴 The history capture, deliberately BELOW both gates above.
+            //
+            // `uploadSuppressed` is the cancel button, and the comment on
+            // `suppressUpload()` — "'nothing was uploaded' has to be a promise
+            // the user can rely on" — extends verbatim to "nothing was kept".
+            // A cancel that still files the audio into a browsable history is
+            // not a cancel; it is a cancel of the network call only, which is
+            // not what the user pressed the button for. Likewise a destroyed
+            // session, which deletes its recording rather than keeping it.
+            //
+            // (The `file == null` check above is a precondition, not a policy
+            // gate: there is no file to copy. The two gates are the privacy
+            // decision, and this hook is after both.)
+            //
+            // Not on the main thread: `onFinished` runs on the capture thread.
+            // `runCatching` because a full disk must degrade to "no history
+            // entry", never to a lost transcript — the upload below is the
+            // thing the user is waiting for.
+            val historyId = runCatching {
+                history.add(
+                    audio = file,
+                    text = localTranscript,
+                    fromRemote = false,
+                    audioSeconds = audioSeconds,
+                )
+            }.getOrNull()
+
+            // 🔴 The gate at the top of this method is NOT sufficient on its
+            // own, and the two lines below are what cover the rest.
+            // `history.add` copies up to ~2.29 MiB (AAC, 32 kbps) or ~1.72 MiB
+            // (Opus, 24 kbps) and re-serialises the index, so `destroy()` has a
+            // real window to land between the gate and here.
+            //
+            // 🔴 That window is ~5× WIDER than when this handover was written:
+            // the figure was ~352–469 KiB at the old 120 s recording cap, and
+            // `BubbleDictation.MAX_RECORDING_MS` is now 600 s. The race this
+            // paragraph justifies guarding did not become theoretical — it got
+            // five times easier to hit, which is the direction that makes
+            // `pendingHistoryId` more load-bearing, not less.
+            //
+            // After `worker.shutdownNow()` the enqueue throws
+            // RejectedExecutionException **on the capture thread**, where
+            // nothing catches it.
+            //
+            // The catch is not belt-and-braces around a second
+            // `destroyed.get()`; it is the handler for one of the two ways the
+            // race resolves. `destroy()` is the only thing in this class that
+            // shuts the worker down, the single-thread executor's queue is
+            // unbounded so saturation cannot reject, and `execute` on a
+            // shut-down ThreadPoolExecutor always rejects (AbortPolicy) — so a
+            // rejection here IS a destroy.
+            //
+            // 🔴 But it was once written up as "the check", on the argument
+            // that "'rejected' and 'destroyed' are the same event". They are
+            // not: the enqueue can be ACCEPTED and the task then drained by
+            // `shutdownNow()` without ever running, and in that case the catch
+            // never fires while the entry and its audio copy survive in a
+            // browsable history forever. `pendingHistoryId` is what covers
+            // that instant — handed over here, and claimed by the task below
+            // as its first action. See its kdoc.
+            //
+            // Filing the entry and then taking it back out is the only order
+            // available: the add must finish before we can know it raced.
+            // `DictationHistoryStore.delete` exists for this caller alone.
+            pendingHistoryId.set(historyId)
+            try {
+                worker.execute {
+                    // The claim. Past this point the ladder owns the entry and
+                    // destroy() must not delete it — it is a recording the
+                    // user submitted and is waiting on. `compareAndSet`, not
+                    // `set(null)`, so a task racing a later recording's id
+                    // cannot clear the wrong one.
+                    pendingHistoryId.compareAndSet(historyId, null)
+                    // 🔴 AFTER the claim, never before it. Up to this line
+                    // `destroy()` may still take the entry back out (see
+                    // `pendingHistoryId`), and announcing an id that is then
+                    // deleted would arm a Retry/Save-audio control against
+                    // audio that no longer exists — a worse failure than the
+                    // control never appearing, because the user would press
+                    // it. Past the claim the ladder owns the entry.
+                    historyId?.let { id -> postToMain { callbacks.onHistorySaved(id) } }
+                    transcribeRemotely(file, audioSeconds, historyId)
+                }
+            } catch (_: RejectedExecutionException) {
+                pendingHistoryId.compareAndSet(historyId, null)
+                historyId?.let { runCatching { history.delete(it) } }
+                if (file.exists()) file.delete()
+            }
+        }
+    }
+
+    // --- the remote path ----------------------------------------------------
+
+    /**
+     * Runs the retry / fallback ladder for the finished recording.
+     *
+     * On the worker thread. The ladder itself — and every `R.string` it
+     * resolves — now lives in [RemoteTranscriber], which owns no microphone and
+     * deletes no file, so the dictation-history re-transcribe can run the same
+     * upload path without a capture surface to leave unused.
+     *
+     * 🔴 What stays here is the `destroyed` gate. Each [RemoteTranscriber.Events]
+     * call is wrapped in exactly **one** [postToMain], so every unit that was
+     * delivered atomically before the extraction is still one `Handler` message
+     * — and the gate stays on this class's two posting routes rather than
+     * moving into a class that knows nothing about this session's life cycle.
+     */
+    private fun transcribeRemotely(file: File, audioSeconds: Double, historyId: String?) {
+        transcriberFactory(appContext, settings, locale).transcribe(
+            audio = file,
+            audioSeconds = audioSeconds,
+            // Read when the fallback fires, not now: the recogniser's onFinal
+            // can land after the ladder has started, and this value used to be
+            // read at delivery time.
+            localTranscript = { localTranscript },
+            events = object : RemoteTranscriber.Events {
+                override fun onStatus(text: String) {
+                    postToMain { callbacks.onStatus(text) }
+                }
+
+                override fun onRemoteTranscript(text: String, status: String) {
+                    // Before the post, because this runs on the worker thread
+                    // and writing the index is IO. The stored text has to be
+                    // the text the user actually saw, which is this one — the
+                    // local first guess that `add` filed is now stale.
+                    updateHistoryText(historyId, text, fromRemote = true)
+                    // The final text of this dictation; the feed's own
+                    // setting decides whether it goes anywhere.
+                    clipFeed.offer(text)
+                    postToMain {
+                        callbacks.onTranscript(
+                            text, fromRemote = true, isFinal = true
+                        )
+                        callbacks.onStatus(status)
+                    }
+                }
+
+                override fun onFellBack(status: String, localTranscript: String) {
+                    // Only when there is something to show. `add` already
+                    // filed whatever local text existed at the time, but the
+                    // recogniser's onFinal can land after the ladder started,
+                    // so this is the first point where the text on screen is
+                    // known — and a blank would overwrite a good entry with
+                    // nothing.
+                    if (localTranscript.isNotBlank()) {
+                        updateHistoryText(historyId, localTranscript, fromRemote = false)
+                        clipFeed.offer(localTranscript)
+                    }
+                    postToMain {
+                        callbacks.onStatus(status)
+                        if (localTranscript.isNotBlank()) {
+                            callbacks.onTranscript(
+                                localTranscript, fromRemote = false, isFinal = true
+                            )
+                        }
+                    }
+                }
+            },
+        )
+        // 🔴 The file is NOT deleted here, exactly as before: destroy() owns
+        // the cache file's life cycle for a recording this session made. The
+        // history copy is a COPY, so that deletion is none of history's
+        // business — which is the whole reason `add` does not move the file.
+    }
+
+    /**
+     * Rewrites a history entry's transcript, tolerating every way it can fail
+     * to exist.
+     *
+     * A null [id] means the capture hook never filed anything (the store threw,
+     * or this is a session whose recording was suppressed and so never reached
+     * the hook); a store that no longer holds the id means it was evicted while
+     * the upload was in flight. Neither is an error, and neither may interfere
+     * with delivering the transcript — which is what the user is waiting for.
+     */
+    private fun updateHistoryText(id: String?, text: String, fromRemote: Boolean) {
+        if (id == null) return
+        runCatching { history.updateText(id, text, fromRemote) }
+    }
+
+    internal companion object {
+        /**
+         * Runs [destroy]'s history cleanup off the calling thread.
+         *
+         * 🔴 A named function rather than an inline `Thread { … }.start()` for
+         * one reason: "this does not run on the caller's thread" is the
+         * property that matters, `destroy()`'s caller is the main thread, and
+         * the observable outcome of an inline delete is identical — so without
+         * a seam no test could see the difference at all. Pinned by
+         * `DictationSessionHistoryCaptureTest.historyCleanupNeverRunsOnTheCallersThread`.
+         *
+         * It **starts** the thread rather than returning one, deliberately: an
+         * unstarted `Thread` invites `.run()` at the call site, which executes
+         * the block inline and would be exactly the defect this exists to
+         * prevent, while still passing a test written against the factory.
+         *
+         * ⚠ What this does NOT pin, stated rather than implied: that `destroy`
+         * calls it. A mutant inlining `history.delete(id)` into `destroy` would
+         * survive, because Robolectric runs the activity on the main thread and
+         * enforces no `StrictMode` — the same gap
+         * `SettingsHistoryControlsTest` already names for its `usage()` read.
+         *
+         * Daemon because the work is best-effort and must never hold up a
+         * process the system is trying to end.
+         */
+        internal fun runHistoryCleanup(block: () -> Unit) {
+            Thread(block, "dicta-history-cleanup").apply { isDaemon = true }.start()
+        }
+    }
+}

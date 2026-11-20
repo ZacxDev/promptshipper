@@ -1,0 +1,683 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Transcription settings. Plain framework widgets only — the APK ships no
+  AndroidX, so no ConstraintLayout and no Material components.
+
+  Issue #10: this screen was half-themed. The layout carried the structure of
+  the 2026-10 design pass nowhere: every control was a stock platform widget on
+  a default window, so Settings "read as a screen from a different app" next to
+  MainActivity. It is now built from the same four conventions that screen
+  uses, and nothing else:
+
+    * the level-0 window (@color/dicta_surface_0) with 20dp side padding;
+    * @style/Text.Dicta.SectionHeading for every group label — uppercase,
+      tracked-out, accent, 9.85:1 on surface_0 — matching "PERMISSIONS" and
+      "TRIGGERS (PICK ANY)";
+    * @drawable/row_bg panels at level 1 for the groups themselves, so a flat
+      run of labels becomes addressable blocks;
+    * @drawable/outline_button_bg at 22dp with stateListAnimator="@null" for a
+      secondary action, and NO accent fill anywhere — the accent fill means
+      "dictate" (see the comment on @id/try_now_button), and nothing on this
+      screen dictates.
+
+  🔴 Every id SettingsActivity addresses is unchanged and in the same order —
+  @id/stt_remote_enabled, @id/stt_language, @id/stt_url,
+  @id/stt_token, @id/stt_save, @id/stt_test, @id/stt_clear_token,
+  @id/stt_status — and no control changed type, so save(), clearToken(),
+  testConnection() and renderTokenState() are untouched. DictationLanguageTest
+  drives the real spinner through the real activity and still does.
+
+  Added since: the History group at the bottom — @id/stt_history_usage and
+  @id/stt_clear_history — built from the same four conventions and from no
+  new ones. SettingsThemingTest's control ledger covers it.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/dicta_surface_0"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="32dp"
+        android:paddingBottom="32dp">
+
+        <!--
+          Masthead. Theme.Dicta is NoActionBar, so this heading is the only
+          thing naming the screen and it is sized as a title (24sp) rather than
+          promoted to @style/Text.Dicta.SectionHeading — the accent uppercase
+          label is the convention for a GROUP inside a screen, and using it
+          here would leave the screen itself unnamed and the first group
+          indistinguishable from the title.
+
+          Deliberately NO mic glyph beside it, unlike MainActivity's masthead:
+          that screen's comment reserves the icon's artwork for the one place
+          it ties the launcher icon to the app.
+        -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/stt_section_remote"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:letterSpacing="-0.01"
+            android:textColor="@color/dicta_on_surface" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/stt_section_remote_blurb"
+            android:textSize="14sp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="@color/dicta_on_surface_variant" />
+
+        <!-- ===== Service ===== -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/stt_section_service" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <!-- Left as a framework CheckBox with no background, exactly as
+                 MainActivity leaves @id/bubble_switch and @id/notif_switch: the
+                 box and tick are drawn from colorControlActivated /
+                 colorControlNormal, which Theme.Dicta already points at the
+                 ember accent, so a custom drawable here would only re-state
+                 what the theme does. Only the label metrics are set, to match a
+                 row label on the other screen. -->
+            <CheckBox
+                android:id="@+id/stt_remote_enabled"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:gravity="center_vertical"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/stt_remote_enabled_label" />
+        </LinearLayout>
+
+        <!-- ===== Language ===== -->
+        <!--
+          Issue #7: the dictation language.
+
+          🔴 Before this control existed, the language was the device locale and
+          nothing else, so an operator on an es-CO handset could not dictate
+          English at all — the service correctly transcribed English speech as
+          Spanish, which reads as a broken recogniser rather than as a setting
+          nobody was offered.
+
+          The entries are built in code from SttLanguage.DISPLAY_NAMES rather
+          than from a <string-array> here: the allowlist and the labels would
+          otherwise be two lists in two files that drift, and a one-element
+          offset would mislabel every language after it. SttLanguageTest pins
+          the label map against the allowlist.
+        -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/stt_section_language" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/stt_language"
+                android:text="@string/stt_language_label"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <!--
+              🔴 Issue #10's measurable half of the regression: this Spinner
+              arrived with no background and no item layouts, i.e. the platform
+              spinner_background_material plus
+              android.R.layout.simple_spinner_item, which is why the
+              unthemed-control count went UP when the picker landed.
+
+              It now boxes like the text fields below it (@drawable/input_bg,
+              14dp, 48dp) and opens onto @drawable/popup_bg. The caret that the
+              platform background used to draw is supplied by
+              @layout/spinner_item instead — without it a themed Spinner is
+              visually a read-only field. The selected-row mark lives in
+              @layout/spinner_dropdown_item; both files explain why they are
+              shaped the way they are.
+            -->
+            <Spinner
+                android:id="@+id/stt_language"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:background="@drawable/input_bg"
+                android:padding="14dp"
+                android:popupBackground="@drawable/popup_bg"
+                android:contentDescription="@string/stt_language_label" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/stt_language_note"
+                android:textSize="13sp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/dicta_on_surface_variant" />
+        </LinearLayout>
+
+        <!-- ===== Connection ===== -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/stt_section_connection" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/stt_url"
+                android:text="@string/stt_url_label"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <!-- @drawable/input_bg + 14dp is the screen-level input convention
+                 (see @id/transcript in activity_dictate.xml). The padding is
+                 not cosmetic: replacing the platform EditText background drops
+                 the padding that drawable reported, so without it the text sits
+                 on the ring. -->
+            <EditText
+                android:id="@+id/stt_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:background="@drawable/input_bg"
+                android:padding="14dp"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:textColorHint="@color/dicta_on_surface_variant"
+                android:hint="@string/stt_url_hint"
+                android:importantForAutofill="no"
+                android:inputType="textUri" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/stt_token"
+                android:text="@string/stt_token_label"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <!--
+              textPassword, and the stored value is NEVER rendered back into this
+              field: an empty field means "keep what is stored". importantForAutofill
+              is off so the token is not offered to a password manager or synced.
+            -->
+            <EditText
+                android:id="@+id/stt_token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:background="@drawable/input_bg"
+                android:padding="14dp"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:textColorHint="@color/dicta_on_surface_variant"
+                android:hint="@string/stt_token_hint_empty"
+                android:importantForAutofill="no"
+                android:inputType="textPassword" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/stt_token_note"
+                android:textSize="12sp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/dicta_on_surface_variant" />
+        </LinearLayout>
+
+        <!-- The actions carry no section heading, matching @id/try_now_button:
+             a call to action is not a group of settings. Both of these are
+             secondary-outlined rather than accent-filled — see the file
+             header. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/stt_save"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/stt_save" />
+
+            <Button
+                android:id="@+id/stt_test"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:background="@drawable/outline_button_bg"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/stt_test" />
+        </LinearLayout>
+
+        <!--
+          The destructive action, and the only control on the screen that is
+          not @drawable/outline_button_bg.
+
+          🔴 THREE cues, because colour may not carry this alone (colors.xml,
+          "state is never carried by colour alone"): the error-coloured ring and
+          label, the ✕ glyph, and @string/stt_clear_token_desc, which names
+          what is deleted and what Dicta does afterwards. The glyph and the
+          description each identify the control as destructive with no colour
+          vision at all; drop them and only the red is left.
+
+          The description is additive to the visible label, not a replacement
+          for it — the label still reads "Clear token", so a screen reader
+          announces the consequence while the screen still shows the action.
+        -->
+        <Button
+            android:id="@+id/stt_clear_token"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/destructive_button_bg"
+            android:drawableStart="@drawable/ic_close"
+            android:drawableTint="@color/dicta_error"
+            android:drawablePadding="8dp"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_error"
+            android:contentDescription="@string/stt_clear_token_desc"
+            android:text="@string/stt_clear_token" />
+
+        <TextView
+            android:id="@+id/stt_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/stt_status_idle"
+            android:textSize="13sp"
+            android:lineSpacingExtra="3dp"
+            android:textColor="@color/dicta_on_surface_variant" />
+
+        <!-- ===== History =====
+             Last, and deliberately below @id/stt_status: everything above is
+             one subject (which service, which language, which token) and
+             @id/stt_status is that cluster's own result line. History is a
+             different subject, so it gets its own heading and its own panel
+             rather than being wedged between a control and the line that
+             reports on it.
+
+             🔴 The retention bounds are NOT exposed here. Three numbers with
+             "whichever binds first" semantics is a settings screen that needs
+             explaining; if a control is ever wanted it is one toggle, not
+             three sliders. What the user gets is the two things they can act
+             on: how much is being kept, and a way to delete it. -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/stt_section_history" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <!-- Read-only, and a TextView rather than a disabled field: there
+                 is nothing to type here, and a greyed-out input would invite
+                 the user to try. Filled from DictationHistoryStore.usage() on
+                 a worker thread (it reads the index off disk), so its
+                 android:text is the pending string and never a stale number. -->
+            <TextView
+                android:id="@+id/stt_history_usage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/stt_history_usage_pending"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <!-- The result of the last export or import: counts, or the named
+                 reason an archive was refused. Empty until one has run. -->
+            <TextView
+                android:id="@+id/stt_history_transfer_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+        </LinearLayout>
+
+        <!-- Export / import of the whole history as one archive file
+             (docs/history-archive-format.md). In-app ACTION_CREATE_DOCUMENT /
+             ACTION_OPEN_DOCUMENT through the Storage Access Framework: no
+             permission, and no exported surface — the same choice as
+             @id/stt_import_snippets. Outline styling: neither destroys
+             anything (an import never overwrites or deletes an item). -->
+        <Button
+            android:id="@+id/stt_export_history"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/outline_button_bg"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_on_surface"
+            android:contentDescription="@string/stt_export_history_desc"
+            android:text="@string/stt_export_history" />
+
+        <Button
+            android:id="@+id/stt_import_history"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/outline_button_bg"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_on_surface"
+            android:contentDescription="@string/stt_import_history_desc"
+            android:text="@string/stt_import_history" />
+
+        <!--
+          The second destructive action, built exactly like @id/stt_clear_token
+          above — same drawable, same glyph, same three-cue rule.
+
+          🔴 THREE cues, because colour may not carry this alone (colors.xml,
+          "state is never carried by colour alone"): the error-coloured ring
+          and label, the ✕ glyph, and @string/stt_clear_history_desc, which
+          names what is deleted and that it is irreversible. Either of the
+          latter two identifies the control as destructive with no colour
+          vision at all.
+
+          @drawable/ic_close is reused rather than a new bin glyph being drawn:
+          ✕ already means "remove this" on this screen, and a second,
+          differently-drawn destructive mark would make the two actions look
+          like different KINDS of thing when they are the same kind.
+        -->
+        <Button
+            android:id="@+id/stt_clear_history"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/destructive_button_bg"
+            android:drawableStart="@drawable/ic_close"
+            android:drawableTint="@color/dicta_error"
+            android:drawablePadding="8dp"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_error"
+            android:contentDescription="@string/stt_clear_history_desc"
+            android:text="@string/stt_clear_history" />
+
+        <!-- Snippets (issue #38): the snip catalog the bubble's long-press
+             picker searches.
+
+             🔴 Its own group rather than a row inside Connection or History,
+             on the same reasoning the History comment above gives: those three
+             are all about one subject (which service, which language, which
+             token) and @id/stt_status is that cluster's result line. A snippet
+             catalog is a different subject, so it gets its own heading, its own
+             state line and its own action.
+
+             🔴 The import is an in-app ACTION_OPEN_DOCUMENT and there is NO
+             <intent-filter> anywhere in this change — see
+             @string/stt_section_snippets' comment and AndroidManifest.xml. The
+             state line is read from disk on a worker thread, so its
+             android:text is the pending string and never a stale count. -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/stt_section_snippets" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:id="@+id/stt_snippets_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/stt_snippets_pending"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+        </LinearLayout>
+
+        <!-- Built exactly like @id/stt_save and @id/stt_test — same drawable,
+             same on-surface label, same suppressed platform animator. NOT
+             destructive styling: an import replaces a re-importable cache, and
+             spending the error colour on it would devalue that cue on the two
+             controls that destroy the user's own voice. -->
+        <Button
+            android:id="@+id/stt_import_snippets"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/outline_button_bg"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_on_surface"
+            android:contentDescription="@string/stt_import_snippets_desc"
+            android:text="@string/stt_import_snippets" />
+
+        <!-- 🔴 ITS OWN SECTION, for the reason the snippets heading above gives
+             about itself: the transcription cluster is "which service, which
+             language, which token" with @id/stt_status as its result line, and
+             the shared clipboard is a DIFFERENT subject reaching a DIFFERENT
+             service with a SEPARATE token. Folding its token field into the
+             transcription group is what would make "Clear token" an ambiguous
+             act — see ClipSettings' kdoc for why the two tokens are separate at
+             all. -->
+        <TextView
+            style="@style/Text.Dicta.SectionHeading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/clip_settings_header" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/clip_settings_desc"
+            android:textSize="12sp"
+            android:lineSpacingExtra="3dp"
+            android:textColor="@color/dicta_on_surface_variant" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/row_bg"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/clip_url"
+                android:text="@string/clip_url_label"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface" />
+
+            <!-- @id/stt_url's element, attribute for attribute. The padding is
+                 not cosmetic: replacing the platform EditText background drops
+                 the padding that drawable reported. -->
+            <EditText
+                android:id="@+id/clip_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:background="@drawable/input_bg"
+                android:padding="14dp"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:textColorHint="@color/dicta_on_surface_variant"
+                android:hint="@string/clip_url_hint"
+                android:importantForAutofill="no"
+                android:inputType="textUri" />
+
+            <!--
+              @id/stt_token's element, attribute for attribute: textPassword,
+              the stored value is NEVER rendered back into the field (an empty
+              field means "keep what is stored"), and importantForAutofill is
+              off so the token is not offered to a password manager or synced.
+            -->
+            <EditText
+                android:id="@+id/clip_token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:background="@drawable/input_bg"
+                android:padding="14dp"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:textColorHint="@color/dicta_on_surface_variant"
+                android:hint="@string/clip_token_hint_empty"
+                android:importantForAutofill="no"
+                android:imeOptions="actionDone"
+                android:inputType="textPassword" />
+
+            <!-- Opt-in, default OFF: see DictationClipFeed. -->
+            <CheckBox
+                android:id="@+id/clip_feed_dictations"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:minHeight="48dp"
+                android:gravity="center_vertical"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/clip_feed_dictations_label" />
+
+            <!-- Default ON; acts only on clips posted as device "mcp". See ClipPush. -->
+            <CheckBox
+                android:id="@+id/clip_agent_push"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:minHeight="48dp"
+                android:gravity="center_vertical"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/clip_agent_push_label" />
+        </LinearLayout>
+
+        <!--
+          🔴 A SECOND SAVE, ADJACENT TO THE FIELDS IT SAVES — and the reason is
+          measured, not stylistic.
+
+          @id/stt_save is the only Save on this screen and it sits in the STT
+          group, HUNDREDS OF LINES ABOVE these fields. The token field is
+          `textPassword` and is never rendered back, so a token typed here and
+          then abandoned — Back, HOME, a focus change, the IME eating the scroll
+          that would have reached the button — is SILENTLY DISCARDED, with the
+          hint still reading "Paste the clipstore bearer token" and no way to
+          tell that from a save that worked. It cost a real token twice, and one
+          blind recovery tap landed on @id/clip_clear_token and deleted it.
+
+          It calls the SAME save() as @id/stt_save — not a second half-save, for
+          the one-rule-one-place reason SettingsActivity.saveClip() already
+          records: a separate clip-only save would be a second opinion about
+          what "Save" does and about the order the two tokens are written in.
+          @id/clip_token's imeOptions=actionDone commits through the same path,
+          so the keyboard's own Done key is a save too.
+
+          Outlined rather than destructive, like the other two actions: the
+          error colour belongs to the controls that destroy something.
+        -->
+        <Button
+            android:id="@+id/clip_save"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/outline_button_bg"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_on_surface"
+            android:contentDescription="@string/clip_save_desc"
+            android:text="@string/clip_save" />
+
+        <!-- @id/stt_clear_token's element, attribute for attribute, including
+             the ✕ glyph and the error colour: the two controls destroy the same
+             KIND of thing, so a difference in styling would read as a
+             difference in consequence. Deliberately unconfirmed, for that
+             button's stated reason — a token is re-pasteable from the password
+             manager it came from. -->
+        <Button
+            android:id="@+id/clip_clear_token"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/destructive_button_bg"
+            android:drawableStart="@drawable/ic_close"
+            android:drawableTint="@color/dicta_error"
+            android:drawablePadding="8dp"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_error"
+            android:contentDescription="@string/clip_clear_token_desc"
+            android:text="@string/clip_clear_token" />
+    </LinearLayout>
+</ScrollView>

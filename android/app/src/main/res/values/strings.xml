@@ -1,0 +1,827 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">promptshipper</string>
+    <string name="tile_label">promptshipper</string>
+    <!-- The tile is the floating bubble's on/off switch, not a launcher: the
+         old tile_description ("Open voice dictation") described a tile that
+         opened the overlay, and the overlay is no longer where a recording
+         starts. A TileService has no screen to toast on, so these three
+         strings are the only place it can say what state it is in and why it
+         is unavailable — they land in its subtitle (API 29+) and its content
+         description. -->
+    <string name="tile_bubble_on">Bubble on</string>
+    <string name="tile_bubble_off">Bubble off</string>
+    <string name="tile_needs_overlay">Needs “Display over other apps”</string>
+
+    <!-- Names the ONE trigger, because there is now only one: the bubble's tap
+         is the only way to start a recording. The previous wording ("Trigger
+         voice dictation from anywhere on your device") was true of a screen
+         that offered three trigger surfaces and said nothing about how. -->
+    <string name="intro">Dictate from anywhere with a floating mic button. Tap it in any app, then copy the text to your clipboard or send it somewhere.</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="mic_row">Microphone (for dictation)</string>
+    <string name="overlay_row">Display over other apps (for the floating bubble)</string>
+    <string name="grant">Grant</string>
+    <string name="status_granted">Granted ✓</string>
+    <string name="status_not_granted">Not granted</string>
+
+    <!-- 🔴 Was @string/section_triggers, "Triggers (pick any)". Renamed rather
+         than reworded: there is exactly one trigger now, so a name meaning
+         "the list of triggers" would be wrong about its own contents, and a
+         resource whose name has drifted from its meaning is how the next
+         author reintroduces the thing it used to describe. This group is the
+         floating bubble and its Quick Settings control. -->
+    <string name="section_bubble">Floating bubble</string>
+    <!-- Says what the tile DOES, which is switch the bubble on and off
+         (DictaTileService reads the same BubbleEnabled flag as the switch). The
+         old wording — "swipe down from any app and tap Dicta" — described the
+         tile from before it became a toggle, when tapping it opened the overlay
+         and started a recording. -->
+    <string name="tile_row">Quick Settings tile — switch the bubble on or off from the shade of any app.</string>
+    <string name="add_tile">Add tile</string>
+    <!-- One string per TileAddOutcome arm, and all four say something
+         DIFFERENT. requestAddTileService reports nine result codes; until
+         2026-10 the callback was discarded and this first string was shown for
+         every one of them, so a user who DECLINED the system prompt was told
+         the tile had been added (issue #14). tile_add_declined existed for that
+         case all along and was referenced from nowhere. -->
+    <string name="tile_added">Tile added — find it in your Quick Settings panel.</string>
+    <string name="tile_add_already">Tile is already in your Quick Settings panel.</string>
+    <string name="tile_add_declined">Tile not added.</string>
+    <!-- The six TILE_ADD_REQUEST_ERROR_* codes. Says what to DO rather than
+         which code came back: the prompt never appeared, and the remedy is the
+         same for all six. Deliberately not tile_add_manual, which opens with
+         "On this Android version" and would be a false explanation here — the
+         Android version is fine, the request failed. -->
+    <string name="tile_add_error">Couldn’t show the add-tile prompt. Add it manually: swipe down twice, tap edit, drag promptshipper in.</string>
+    <string name="tile_add_manual">On this Android version, add the tile manually: swipe down twice, tap edit, drag promptshipper in.</string>
+    <!-- Names the tap, because the tap is the whole trigger. The old wording
+         stopped at "an always-on-top mic button, draggable anywhere" and left
+         the one thing a user has to know — that this is how you dictate —
+         to the deleted "Try dictation now" button. -->
+    <string name="bubble_row">Show the bubble — an always-on-top mic button, draggable anywhere. Tap it to dictate.</string>
+    <string name="need_overlay_first">Allow “Display over other apps” first.</string>
+
+    <!-- 🔴 @string/notif_row, @string/notif_text, @string/trigger_channel and
+         @string/try_now WERE HERE AND ARE DELETED, with the surfaces that used
+         them: a persistent notification carrying a Dictate action, and a "Try
+         dictation now" button. Both started a recording, and the floating
+         bubble's tap is now the only thing that may. @string/dictate went with
+         them — the notification's action label was its only consumer.
+
+         Deleted rather than left unreferenced, for the reason
+         @string/start_dictation was: a string that still exists is a role a new
+         call site can reinstate just by spelling it. -->
+
+    <string name="dictate_title">promptshipper</string>
+    <!-- The resting status line.
+         ⚠ This used to read "Tap Speak — then ⋯ for Copy, Send, Screenshot"
+         and name the overflow route in words, because @id/action_row was
+         hidden until something revealed it. The overflow is gone and the
+         actions are always on screen, so the ⋯ pointed at a control that no
+         longer exists — a hint is a claim too.
+         🔴 Same correction again, for the same reason: it used to begin "Tap
+         Speak", and there is no Speak control any more. The overlay never
+         starts a recording — the floating bubble does — so this line now
+         names only what the card itself can do. -->
+    <string name="dictate_hint">Edit if you need to — then Copy, Send or Screenshot</string>
+    <string name="dictate_text_hint">Speak, or type here</string>
+    <string name="listening">Listening… speak now</string>
+    <!-- 🔴 @string/start_dictation ("Speak") WAS HERE AND IS DELETED. The
+         overlay has no start role any more — the floating bubble is the only
+         way to begin a recording — and the string is removed rather than left
+         unreferenced, so a new call site cannot quietly reintroduce the role
+         by spelling it.
+
+         Short because the mic control is a pill, and the glyph is a real
+         vector (@drawable/ic_mic as a compound drawable) rather than an emoji
+         that renders differently on every device. The label is also what keeps
+         the recording state off colour-only footing. -->
+    <string name="stop_dictation">Stop</string>
+    <string name="copy">Copy</string>
+    <string name="share">Send</string>
+    <string name="close">Close</string>
+    <string name="copied">Copied to clipboard</string>
+    <string name="nothing_to_copy">Nothing to copy yet — dictate something first.</string>
+    <string name="nothing_to_share">Nothing to send yet — dictate something or attach a screenshot first.</string>
+    <string name="share_via">Send dictated text via…</string>
+    <string name="share_with_image_via">Send screenshot + text via…</string>
+    <string name="share_image_via">Send screenshot via…</string>
+
+    <!--
+      "Save audio", not "Download": this control opens the share sheet, so the
+      recording goes wherever the user sends it. Calling it Download would
+      promise a folder this code does not choose.
+    -->
+    <string name="save_audio">Save audio</string>
+    <string name="save_audio_via">Save recording via…</string>
+    <string name="save_audio_unavailable">This recording has not been filed yet — try again in a moment.</string>
+    <string name="save_audio_missing">The audio for this dictation is gone — nothing to save.</string>
+    <string name="save_audio_no_target">No app on this device can receive the recording.</string>
+
+    <string name="screenshot">Screenshot</string>
+    <string name="screenshot_requesting">Asking for screen-capture permission…</string>
+    <string name="screenshot_consent_declined">Screen capture declined — nothing was captured.</string>
+    <string name="screenshot_unsupported">This device has no screen-capture support.</string>
+    <string name="screenshot_ready">Screenshot attached. Tap Send to share it.</string>
+    <string name="screenshot_failed">Screenshot failed: %1$s</string>
+    <!-- Honest, not decorative: with an image attached, many share targets read
+         only the image and silently discard the text. -->
+    <string name="screenshot_attached_note">Screenshot attached. Some apps (most chat apps) drop the text when an image is attached — use Copy if the text must arrive.</string>
+
+    <string name="projection_channel">promptshipper screen capture</string>
+    <string name="projection_active">Capturing the screen…</string>
+    <string name="speak_now">Speak now</string>
+    <string name="mic_denied_fallback">Mic permission denied — you can still dictate with the system voice typing.</string>
+    <string name="use_system_voice_typing">Use system voice typing</string>
+    <string name="no_recognizer">No speech recognizer available on this device.</string>
+    <string name="no_voice_input">No voice input available.</string>
+
+    <!-- ===== the bubble's own states =====
+         🔴 These are contentDescriptions, and they are the non-colour half of
+         the recording indicator. The bubble's visual difference between idle
+         and recording is a ring pulsing in @color/dicta_live — motion and hue
+         and nothing else — so without a label that changes, "the microphone is
+         open right now" would be a colour-only signal (1.4.1), and for a mic
+         that is a privacy problem rather than a styling one. BubbleChromeTest
+         requires the three to be mutually distinct and non-blank, asserted as a
+         set so rewording is free. -->
+    <string name="bubble_idle">Dictate — tap to start recording</string>
+    <string name="bubble_recording">Recording — tap to stop and transcribe</string>
+    <string name="bubble_transcribing">Transcribing — the card is open</string>
+    <!-- Used as BOTH contentDescription and tooltipText, following the overflow
+         toggle in the dictation card. -->
+    <string name="bubble_cancel">Cancel recording — discard it, send nothing</string>
+
+    <!-- The history button in the long-press reveal.
+
+         🔴 @string/bubble_history_chip AND @string/bubble_history_empty WERE
+         HERE AND ARE DELETED. They belonged to the chip ListView that used to
+         live inside the bubble's overlay window: the first was a chip's
+         contentDescription ("%1$s — open and re-transcribe"), the second the
+         "nothing to reveal" chip-shaped label. The reveal is now two icon
+         buttons and no list, so both described a surface that no longer exists.
+         Their replacements are @string/history_row_desc and the THREE distinct
+         empty states in the history-picker block below — three, because a
+         picker can also be unreadable and can also hold a query that matches
+         nothing, neither of which one chip label could say.
+
+         This is the button's contentDescription AND its tooltipText, following
+         @string/bubble_snip's template exactly: it says what tapping DOES, not
+         what the glyph is. An unlabelled ImageButton on an overlay is all a
+         screen-reader user would otherwise meet. -->
+    <string name="bubble_history">Past dictations — search and reopen one</string>
+
+    <!-- The pre-recording reachability warning (SttReachability / BubbleService).
+
+         🔴 Deliberately names NO host, address or port. The dialog is an
+         always-on-top overlay that can appear over any app on the device, and
+         the server's address is a property of the user's own network that they
+         do not need in order to answer the question being asked.
+
+         The body has to carry the whole trade, because the primary button
+         RECORDS. Saying only "server unreachable" would leave the user to
+         guess whether recording still works at all — it does, and the fallback
+         ladder in TranscriptionCoordinator is what makes it work.
+
+         🔴 CONDITIONAL, NOT A PREDICTION — the correction of 2026-10-25. This
+         body used to end "Recording now will use the phone's own speech
+         recognizer, which is less accurate", asserting as fact the one outcome
+         the rest of the app exists to avoid. The warning fires on a /healthz
+         result that can be up to ~2 min stale (SttReachability's freshness
+         window is the interval in effect plus one further PROBE_INTERVAL_MS),
+         and TranscriptionCoordinator then still attempts the real upload,
+         retries it, and may SUCCEED — in which case the server's transcript is
+         what the user gets and the old sentence was simply false. Its recovery
+         poll can replace the on-device text afterwards too. The copy now says
+         what happens IF the upload also fails and leaves the outcome open.
+
+         Still names no host, address or port, for the reason above. -->
+    <string name="stt_unreachable_title">Transcription server unreachable</string>
+    <string name="stt_unreachable_body">promptshipper could not reach the transcription server. Recording still works — the upload is retried, and the phone\'s own speech recognizer, which is less accurate, is used only if that also fails.</string>
+    <!-- The primary action. It records; it is not a retry and must not read
+         like one. -->
+    <string name="stt_unreachable_record">Record anyway</string>
+    <!-- The secondary action. Starts nothing. -->
+    <string name="stt_unreachable_cancel">Don\'t record</string>
+
+    <!-- The card opened on a STORED dictation (DictateLaunch.EXTRA_HISTORY_ID).
+
+         🔴 These four are referenced from DictateActivity.kt, which puts them
+         inside OverlayMinimalLayoutTest's derived status-string length budget.
+         Keep them short — not as a style preference, but because that guard
+         goes red on the longest one, and the fix for a red there is another
+         line on @id/status_text, not a shorter sentence. -->
+    <string name="history_retranscribe">Re-transcribe</string>
+    <!-- Says both what is on screen and that nothing is being recorded; the
+         card otherwise looks exactly like a finished dictation. -->
+    <string name="history_saved">Saved dictation — the microphone is off.</string>
+    <!-- The entry was evicted (or cleared) between the reveal and the tap. Not
+         an error: retention is allowed to remove things. -->
+    <string name="history_missing">That dictation is no longer saved.</string>
+    <!-- The index knows the item but its audio file has gone, so there is
+         nothing to re-send. The transcript on screen is still real. -->
+    <string name="history_audio_missing">The audio for this dictation is gone — the text is all that is left.</string>
+
+    <!-- The runaway cap. Says what happened to the audio, not just that a limit
+         was hit: the recording is submitted, not thrown away. -->
+    <string name="stt_max_duration">Two-minute limit reached — transcribing what was recorded.</string>
+
+    <!-- 🔴 The report a failed capture never had. Without it the tap did
+         NOTHING observable: no toast, no notification change, and since tap 1
+         no longer opens the card, no status line either — indistinguishable
+         from the app being dead.
+
+         🔴 ONE arm of several, not all of them. This string used to be
+         toasted for every cause and claimed in this comment to "name the
+         three real causes" — it named one, and the wrong one twice: a mic held
+         by Dicta itself blamed another app (and hid @string/stt_mic_in_use,
+         which says what to do about it), and a refused startForeground has
+         nothing to do with the microphone. The mapping now lives in
+         BubbleService.messageFor, one arm per BubbleDictation.Failure. THIS
+         arm is CAPTURE_UNAVAILABLE: the device would not give us a capture —
+         no usable encoder, or an AudioRecord that would not initialise.
+         "Try again" because a transient platform refusal is the common case
+         and retrying is the only move the user has.
+
+         Both halves of this sentence hold on every cause that now reaches it.
+         A separate @string/bubble_settings_unavailable once stood here for a
+         SttSettings.create() that threw, where neither half held; that cause
+         was deleted as unreachable (BubbleService.realSession), so it is not
+         bundled back in here — it no longer exists. -->
+    <string name="bubble_capture_failed">Could not start recording — this device would not open the microphone. Try again.</string>
+
+    <!-- BubbleDictation.Failure.FOREGROUND_DENIED: Android refused to promote
+         the service to a microphone foreground service, so the recording was
+         abandoned before the mic was touched. Deliberately does NOT mention
+         the microphone being busy — it is not. Names the notification,
+         because that is the setting the user can actually go and change. -->
+    <string name="bubble_foreground_denied">Could not start recording — Android refused promptshipper\'s recording notification. Check that notifications are allowed for promptshipper, then try again.</string>
+
+    <!-- Refusal shown when a SECOND dictation is attempted while one already
+         holds the microphone: a plain launch of the card (any overlay intent
+         carrying no EXTRA_ATTACH_SESSION) while the bubble is recording, or,
+         the other direction, the bubble tapped while the card's own recogniser
+         is listening.
+
+         🔴 This used to enumerate the surfaces instead — first the QS tile,
+         then the trigger notification and "Try dictation now". All three are
+         gone: the tile is the bubble's toggle and attempts no dictation, and
+         the other two are deleted. Naming the INTENT rather than the callers
+         is what stops this comment going stale again; MicrophoneOwnershipTest
+         drives that intent directly, so the guard is pinned whatever opens it.
+
+         Loud on purpose: the
+         alternative is Android feeding one of the two captures bit-exact
+         zeros, which surfaces as an empty or invented transcript and gets
+         blamed on the server. Shown on BOTH surfaces: the card's status line
+         and, as BubbleDictation.Failure.MIC_IN_USE, the bubble's toast. -->
+    <string name="stt_mic_in_use">promptshipper is already recording — stop that recording first.</string>
+
+    <string name="bubble_channel">promptshipper bubble</string>
+    <string name="bubble_active">Floating mic bubble is active</string>
+    <string name="hide_bubble">Hide bubble</string>
+    <!-- 🔴 @string/bubble_start_refused and the three @string/boot_restore_*
+         strings stood here and were DELETED, not renamed. They were the copy
+         for a platform-refused foreground start: a toast from MainActivity's
+         switch, and a boot-time "could not start after the restart"
+         notification. The refusal cannot occur on either path and the signal
+         could not have carried it either way — BubbleEnabled.startService's
+         kdoc sets out both reasons. There is no replacement copy and none is
+         needed; if a string is wanted here again, that kdoc is the thing to
+         read first. The only decline the user can actually be told about is a
+         missing overlay permission, which is @string/need_overlay_first. -->
+
+    <!-- ===== Remote transcription ===== -->
+    <string name="settings_title">Transcription settings</string>
+    <string name="settings_row">Transcription service — use your self-hosted recognizer instead of the phone\'s.</string>
+    <string name="open_settings">Settings</string>
+
+    <string name="stt_section_remote">Self-hosted transcription</string>
+    <string name="stt_section_remote_blurb">promptshipper uploads each recording to your own speech service and uses its transcript. If the service cannot be reached, the phone\'s built-in recognizer is used instead and you are told.</string>
+    <string name="stt_remote_enabled_label">Use the self-hosted service</string>
+    <!-- Issue #10. The three group labels on the settings screen, rendered
+         through @style/Text.Dicta.SectionHeading — so they are written in
+         sentence case here and uppercased by the style, exactly as
+         @string/section_permissions and @string/section_bubble are. -->
+    <string name="stt_section_service">Service</string>
+    <string name="stt_section_language">Language</string>
+    <string name="stt_section_connection">Connection</string>
+    <string name="stt_section_history">History</string>
+    <!-- The read-only usage line. A plural, not one "%1$d dictations" string:
+         the count is routinely 1 and "1 dictations" on the only screen that
+         reports what the app is keeping of your voice reads as carelessness.
+         MB is mebibytes to one decimal — see HISTORY_BYTES_PER_MB in
+         SettingsActivity for why that unit and not 10^6. -->
+    <plurals name="stt_history_usage">
+        <item quantity="one">History: %1$d dictation, %2$s MB</item>
+        <item quantity="other">History: %1$d dictations, %2$s MB</item>
+    </plurals>
+    <!-- Shown until the first read of the history directory comes back. The
+         usage line is filled from disk on a worker thread, so the layout needs
+         something honest to say in between — a hard-coded "0 dictations" would
+         be a wrong number rather than a pending one. -->
+    <string name="stt_history_usage_pending">History: checking…</string>
+    <string name="stt_clear_history">Delete all history</string>
+    <!-- 🔴 The second destructive control on this screen, and the same three
+         cues as @string/stt_clear_token_desc: the error ring, the ✕ glyph and
+         this description. It names what is deleted — the recordings, not only
+         the transcripts — and that it cannot be undone, neither of which the
+         visible "Delete all history" label says. -->
+    <string name="stt_clear_history_desc">Delete all history. Every saved recording and its transcript is deleted from this phone immediately, and this cannot be undone.</string>
+    <!-- 🔴 The confirmation gate in front of that button. The destructive
+         styling and the description above are CUES, and a cue is a label rather
+         than a gate: one mis-tap on a scrolling settings screen irreversibly
+         destroys every recording on the device. It matters more than it looks
+         because "Delete all history" is currently the ONLY way to remove
+         anything at all — there is no per-item delete and no viewer yet — so it
+         is both reached for more often and more expensive to hit by accident.
+
+         The message names the count and the irreversibility instead of asking
+         "Are you sure?", which tells the user nothing they do not already know.
+         The plural carries the count; the unconditional string covers the cases
+         where there is nothing to count (empty history, or the first usage read
+         not back yet) — it must not render "0 recordings". -->
+    <string name="stt_clear_history_confirm_title">Delete all history?</string>
+    <plurals name="stt_clear_history_confirm">
+        <item quantity="one">Delete the %1$d saved recording and its transcript from this phone? This cannot be undone.</item>
+        <item quantity="other">Delete all %1$d saved recordings and their transcripts from this phone? This cannot be undone.</item>
+    </plurals>
+    <string name="stt_clear_history_confirm_any">Delete every saved recording and its transcript from this phone? This cannot be undone.</string>
+    <string name="stt_clear_history_confirm_delete">Delete</string>
+    <string name="stt_clear_history_confirm_keep">Keep</string>
+    <!-- History export / import (docs/history-archive-format.md). -->
+    <string name="stt_export_history">Export history to a file</string>
+    <string name="stt_export_history_desc">Export history. Every saved recording and its transcript is written to one archive file you choose.</string>
+    <string name="stt_import_history">Import history from a file</string>
+    <string name="stt_import_history_desc">Import history from an archive file — one exported by promptshipper, or by the dicta app (Settings → Export history). The whole file is verified before anything is written; dictations already on this phone are kept and never overwritten.</string>
+    <string name="stt_history_transfer_working">Working…</string>
+    <!-- Export, written AND read back from the chosen file: %1$d is the item count. -->
+    <string name="stt_history_export_done">Exported %1$d dictations and read the file back: all verified.</string>
+    <string name="stt_history_export_mismatch">Exported %1$d dictations, but the file read back holds %2$d. Do not rely on it; export again.</string>
+    <string name="stt_history_export_failed">Export failed: %1$s. Nothing on this phone was changed.</string>
+    <string name="stt_history_import_done">Imported %1$d · already here, skipped %2$d · rejected %3$d</string>
+    <string name="stt_history_import_rejected">That archive was refused (%1$s) and nothing was imported.</string>
+    <string name="stt_history_import_unreadable">That file could not be read: %1$s. Nothing was imported. Try again.</string>
+    <string name="stt_history_no_picker">No file picker is available on this device.</string>
+    <string name="stt_history_no_file">the picker returned no file</string>
+    <!-- Issue #7. "Follow device language" is the first entry and the default;
+         the rest are built from SttLanguage.DISPLAY_NAMES. -->
+    <string name="stt_language_label">Dictation language</string>
+    <string name="stt_language_follow_device">Follow device language (%1$s)</string>
+    <string name="stt_language_note">What you speak — not the app\'s language. Change this if your phone is set to one language but you dictate in another.</string>
+
+    <string name="stt_url_label">Service URL</string>
+    <string name="stt_url_hint">http://100.x.y.z:8118 — or pair from the main screen</string>
+    <string name="stt_token_label">Bearer token</string>
+    <!-- The two hints are the ONLY signal about the stored token. The token
+         itself is never rendered back into the field. -->
+    <string name="stt_token_hint_empty">Paste the token</string>
+    <string name="stt_token_hint_stored">A token is stored — leave blank to keep it</string>
+    <string name="stt_token_note">Stored encrypted with a key held in the Android keystore. It is never shown again, never logged, and never included in an error message.</string>
+    <string name="stt_save">Save</string>
+    <string name="stt_test">Test</string>
+    <string name="stt_clear_token">Clear token</string>
+    <!-- 🔴 Issue #10: the contentDescription of the one destructive control on
+         the settings screen, and one of the two cues that do NOT depend on
+         seeing its red ring (the other is the ✕ glyph). It names what is
+         deleted AND what Dicta does next, which the visible "Clear token"
+         label does not — a description that merely repeats the label would
+         satisfy "has a description" and tell a screen-reader user nothing. -->
+    <string name="stt_clear_token_desc">Clear the stored token. The token is deleted and promptshipper falls back to the phone\'s recognizer until you paste a new one.</string>
+    <string name="stt_saved">Saved.</string>
+    <string name="stt_token_cleared">Token cleared — promptshipper will use the phone\'s recognizer.</string>
+    <string name="stt_token_save_failed">Could not encrypt the token (%1$s) — nothing was saved.</string>
+    <string name="stt_status_idle">Not tested yet.</string>
+    <string name="stt_testing">Checking the service…</string>
+    <!-- Deliberately silent about the token: /healthz is unauthenticated, so a
+         green result says nothing about whether the token is right. -->
+    <string name="stt_test_ok">Service reachable and the model is loaded. (This does not check the token.)</string>
+    <string name="stt_test_failed">Could not reach the service at that URL.</string>
+
+    <!-- Dictation status line, remote path -->
+    <string name="stt_recording">Recording… tap Stop when done</string>
+    <string name="stt_uploading">Transcribing on the server…</string>
+    <!-- 🔴 No ✓. The tick was a VERIFICATION claim the server does not earn:
+         the service fabricates fluent transcripts from near-silent input
+         (reproduced 2/2 on device; one output was a racial slur), and the
+         client rendered those under a checkmark. This string names the ENGINE,
+         which is the only thing the client actually knows. -->
+    <string name="stt_remote_done">Transcribed by the server</string>
+    <!-- Shown INSTEAD of stt_remote_done when the server reports
+         truncated=true, i.e. generation hit its max_new_tokens cap and the
+         transcript is cut off. Only on an explicit true: truncated=null means
+         the server could not tell, and a warning on every dictation would
+         train the user to ignore it. -->
+    <string name="stt_remote_truncated">Transcribed by the server — cut off at the length limit</string>
+    <!-- 🔴 Shown INSTEAD of either label above when the server reports
+         unreliable=true, i.e. one of its configured rules fired on this
+         transcript (today: no_speech_prob over threshold, which is what the
+         fabrications-on-quiet-input measure as). This is the status that does
+         issue #8's actual work: `truncated` is a real detector but it was
+         false for BOTH measured fabrications, so it cannot fire on them.
+
+         Wins over stt_remote_truncated when both fire — a transcript that may
+         be fabricated is a worse problem than one that is merely cut off.
+
+         Only on an explicit true. unreliable=null means NOTHING COULD BE
+         CHECKED (no threshold configured, or the signal a rule needs is
+         itself null), and rendering that as "looks fine" is the ✓ defect one
+         layer further in.
+
+         ⚠ COPY UNCONFIRMED: the operator has not reviewed this wording. -->
+    <string name="stt_remote_unreliable">Transcribed by the server — the output may not match what you said</string>
+    <!-- 🔴 The user must know WHICH engine produced the text on screen. The
+         two engines disagree, sometimes materially, and silently swapping one
+         for the other is how a wrong transcript gets trusted. -->
+    <string name="stt_fell_back">Using the phone\'s recognizer — %1$s</string>
+    <string name="stt_fell_back_retrying">Using the phone\'s recognizer for now — %1$s. Still trying the server; the text will update if it succeeds.</string>
+    <string name="stt_not_configured">No transcription service configured — using the phone\'s recognizer. Set one up in Settings.</string>
+    <string name="stt_no_audio">Nothing was recorded.</string>
+    <string name="stt_mic_silenced">Another app has the microphone — promptshipper is receiving silence.</string>
+    <string name="stt_tier_remote_only">The phone\'s recognizer produced nothing — recording continues, the server transcript is on its way.</string>
+
+    <!-- ===== Accessibility labels for the status strip =====
+         Static contentDescriptions for @id/level_meter and @id/engine_badge in
+         activity_dictate.xml. Reserved by the design pass and KEPT at the merge
+         of the remote-STT work: both views are now bound, and both still need a
+         label that does not change as their value does.
+
+         @string/level_meter_desc replaced a `stt_level` ("Level: %1$s") that the
+         STT branch wired straight into android:contentDescription. A format
+         string used as a literal label is announced verbatim, so a screen
+         reader read out "Level: %1$s"; the meter's level is conveyed by the
+         ProgressBar's own progress, so the label only has to name the view. -->
+    <string name="level_meter_desc">Microphone input level</string>
+    <string name="engine_badge_desc">Transcription engine</string>
+
+    <!-- ===== What @id/engine_badge says =====
+         🔴 SHORT, and NOT the status line's sentence. The badge used to be
+         bound to @string/stt_remote_done, which is also what the status line
+         carries for a plain remote success — so after an ordinary dictation
+         the card read "Transcribed by the server" twice, once in an 11sp pill
+         and again in the full-width line under it.
+
+         The sentence stays on the status line, because that is the surface
+         that carries the truncated / unreliable variants of it
+         (RemoteTranscriber.statusLabel) and those need the width. The badge
+         answers only "which engine", which is one word.
+
+         Both halves must stay DISTINGUISHABLE from each other and from every
+         status string; OverlayMinimalLayoutTest pins both properties. -->
+    <string name="engine_badge_remote">Server</string>
+    <string name="engine_badge_local">Phone</string>
+
+    <!-- ===================== the snippet picker (issue #38) ================
+
+         The long-press reveal's second affordance, and the screen it opens.
+
+         🔴 The button string is used as BOTH contentDescription and
+         tooltipText, following @string/bubble_cancel. It says what tapping
+         DOES, because the glyph alone cannot: a pair of braces reads as
+         "a snippet" at best, and is silent about search, about copying, and
+         about the fact that this control does NOT paste into the recording.
+
+         🔴 Do not re-justify this wording from the glyph — it was once argued
+         "because the glyph is a clipboard", which @drawable/ic_snip no longer
+         is. The string says what tapping does whatever the icon shows. -->
+
+    <string name="bubble_snip">Snippets — search and copy one to the clipboard</string>
+
+    <string name="snip_title">Snippets</string>
+    <string name="snip_search_hint">Search snippets</string>
+
+    <!-- 🔴 THREE distinct empty states, never one.
+
+         "Nothing imported", "an imported catalog with no rows in it" and
+         "nothing matches what you typed" are different problems with different
+         fixes, and one message for all of them is exactly the silent-empty
+         failure SnipCatalog refuses a broken file to avoid, relocated into the
+         UI: a picker showing an empty list is indistinguishable from a broken
+         feature. -->
+    <string name="snip_empty_no_catalog">No snippets imported yet. Import a snip snippets.json from Settings.</string>
+    <string name="snip_empty_catalog_empty">The imported snippets.json has no snippets in it.</string>
+    <string name="snip_empty_no_matches">No snippets match that.</string>
+
+    <!-- The row's contentDescription. The row's own text is a label plus a
+         truncated body preview, which a screen reader announces as two pieces
+         of text rather than as a button, so this says what tapping does. -->
+    <string name="snip_row_desc">%1$s — copy this snippet to the clipboard</string>
+    <!-- 🔴 Names the snippet, never its BODY. A toast is drawn over
+         whatever app the user is in and is screenshot-able; a snippet body is
+         arbitrary operator text (paths, hostnames, prompt templates) and has no
+         business being flashed on screen to confirm a copy. -->
+    <string name="snip_copied">Copied “%1$s”</string>
+
+    <!-- ===================== the history picker ============================
+
+         The long-press reveal's FIRST affordance, and the screen it opens.
+         Deliberately the snippet block above's shape, string for string, since
+         both pickers are FloatingPickerActivity subclasses and a user meeting
+         one should recognise the other.
+
+         The button string is @string/bubble_history, up next to
+         @string/bubble_snip rather than here, because the two buttons sit
+         adjacent and their wordings have to be read together. -->
+
+    <string name="history_title">Past dictations</string>
+    <string name="history_search_hint">Search transcripts</string>
+
+    <!-- 🔴 THREE distinct empty states, never one — @string/snip_empty_*'s
+         discipline, and the chip reveal had only ONE ("No saved dictations
+         yet"), which is a thing the search field made insufficient.
+
+         "The store could not be read", "you have no saved dictations" and
+         "nothing matches what you typed" are different problems with different
+         fixes: the first is a fault, the second is a new install, the third is
+         a query. One message for all three is the silent-empty failure that
+         reads as "the feature is broken" — and the WORST collapse is the third
+         into the second, which would tell a user holding 94 dictations that
+         they have none. -->
+    <string name="history_empty_unreadable">promptshipper could not read its saved dictations.</string>
+    <string name="history_empty_none">No saved dictations yet. Tap the bubble to record one.</string>
+    <string name="history_empty_no_matches">No saved dictations match that.</string>
+
+    <!-- The row's contentDescription, @string/snip_row_desc's twin. The row's
+         own text is an age, an engine name and a truncated transcript, which a
+         screen reader announces as pieces of text rather than as a button, so
+         this says what tapping does.
+
+         🔴 %1$s is the TRUNCATED preview, not the whole transcript: a
+         contentDescription is read aloud, and a screen-reader user scanning a
+         list must not have a whole dictation spoken at them per row. -->
+    <string name="history_row_desc">%1$s — open and re-transcribe</string>
+
+    <!-- A saved dictation whose transcript is empty: the remote and local
+         engines both returned nothing, or the entry predates one of them. The
+         row must still be visible and tappable — the AUDIO is still there and
+         still re-transcribable, so a row the user cannot see is an item they
+         cannot reach. Parenthesised because it is Dicta speaking, not the
+         transcript. -->
+    <string name="history_no_transcript">(no transcript)</string>
+
+    <!-- ===================== snippet import (Settings) ====================
+
+         🔴 An in-app document picker, and deliberately NO
+         <intent-filter>. The issue's wording suggested receiving the catalog
+         through the share sheet; that was decided against, because an exported
+         receiver is an entry point any installed app could invoke on a PUBLIC
+         app. The import is therefore something the operator starts from this
+         screen, and nothing else can start at all.
+
+         The CONTENT is validated, never the filename and never the claimed
+         MIME type — a provider's type is a claim about a file, not a fact. -->
+    <string name="stt_section_snippets">Snippets</string>
+    <string name="stt_import_snippets">Import snippets…</string>
+    <string name="stt_import_snippets_desc">Import snippets. Opens the document picker to choose a snip snippets.json; it replaces the snippets already on this phone and nothing else.</string>
+    <!-- Shown until the first read of the stored catalog comes back, for
+         @string/stt_history_usage_pending's reason: the read is file IO on a
+         worker thread, and a hard-coded "0 snippets" would be a wrong number
+         rather than a pending one. -->
+    <string name="stt_snippets_pending">Snippets: checking…</string>
+    <string name="stt_snippets_none">No snippets imported yet</string>
+    <!-- A plural for @plurals/stt_history_usage's reason: the count is
+         routinely 1, and "1 snippets" reads as carelessness. %2$s is the
+         import date. -->
+    <plurals name="stt_snippets_count">
+        <item quantity="one">%1$d snippet, imported %2$s</item>
+        <item quantity="other">%1$d snippets, imported %2$s</item>
+    </plurals>
+    <!-- 🔴 Carries the REASON. A bare "Import failed" leaves the
+         operator with nothing to act on, and the reasons are all actionable and
+         all different: not an array, a row with no label, a duplicate label.
+         SnipCatalog produces the text; this is the frame.
+
+         🔴 And it is used ONLY for SnipCatalog.Invalid, because it is a claim
+         about the file's CONTENTS. See the next string. -->
+    <string name="stt_snippets_import_failed">That file is not a snippets.json: %1$s</string>
+    <!-- 🔴 The SECOND frame: an unreadable file is a different failure with a
+         different next step. A revoked URI, an IOException, a cloud provider's
+         timeout — all reach the same handler, over a file that may be perfectly
+         valid. Telling the operator it "is not a snippets.json" sends them off
+         to re-export a good file when the right action is to retry. %1$s is the
+         exception's class name: there is no reason to quote here, and a class
+         name is at least distinguishable between faults. -->
+    <string name="stt_snippets_import_unreadable">That file could not be read: %1$s. Try again.</string>
+    <!-- The reason for the one read failure with no exception behind it:
+         RESULT_OK carrying no document. A silent return there is a no-op the
+         operator cannot tell apart from a lost tap. -->
+    <string name="stt_snippets_import_no_file">the picker returned no file</string>
+    <string name="stt_snippets_no_picker">No app on this phone can open a document.</string>
+
+    <!-- ===== The shared clipboard ========================================= -->
+
+    <!-- The third satellite button's label. @string/bubble_snip's template
+         exactly — it says what tapping DOES, not what the control IS — and it
+         must not announce the same thing as either sibling, which
+         BubbleClipRevealTest asserts. -->
+    <string name="bubble_clip">Shared clipboard — search and copy one from any device</string>
+
+    <!-- 🔴 The SAME button, announcing a queue that cannot drain. Not a second
+         control and not a badge: the reveal has three buttons and gains no
+         fourth, because the thing that is wrong IS the shared clipboard and the
+         shared clipboard already has an affordance. See ClipOutboxHealth for
+         what "cannot drain" means and why it is not "has pending work".
+
+         🔴 It must name the CONSEQUENCE, not the colour. The button also turns
+         @color/dicta_error, and the standing rule at the top of colors.xml is
+         that state is never carried by colour alone — a screen-reader user
+         hearing @string/bubble_clip over an ember icon learns nothing at all.
+         It must also DIFFER from @string/bubble_clip, which BubbleChromeTest
+         asserts as a set: a description copied from the ordinary label
+         satisfies "has a description" and tells nobody anything, which is the
+         half with teeth in SettingsThemingTest's destructive-control ledger.
+
+         "Not reaching" rather than "failed": the captures are safe on the phone
+         and will go when the mesh or the token is fixed, so a word suggesting
+         they were lost would be a worse lie than the silence it replaces. -->
+    <string name="bubble_clip_stuck">Shared clipboard — captures on this phone are not reaching your other devices. Open it to retry, or check the clip token in Settings</string>
+
+    <!-- 🔴 The SAME button again, announcing DATA LOSS rather than a stalled
+         queue. A third label and not a reuse of @string/bubble_clip_stuck,
+         because that one ends "Open it to retry" and there is nothing to
+         retry: the capture left the outbox without reaching the store, and the
+         outbox was the only copy. Announcing a destroyed capture with the
+         recovery instructions for a stuck one is a guard that is SPELLED
+         rather than structural.
+
+         It must differ from BOTH siblings, which BubbleChromeTest asserts as a
+         set of three.
+
+         "Could not be sent and have been lost" rather than "failed to sync":
+         the whole defect this branch fixes is that the operator was told
+         captures were queued while they were being deleted, so the wording
+         here has to be the one that cannot be read optimistically. -->
+    <string name="bubble_clip_destroyed">Shared clipboard — some captures on this phone could not be sent and have been lost. Check the clip store URL in Settings</string>
+
+    <string name="clip_title">Shared clipboard</string>
+    <string name="clip_search_hint">Search clips</string>
+
+    <!-- 🔴 THREE distinct empty states, never one — @string/snip_empty_*'s and
+         @string/history_empty_*'s rule, and FloatingPickerActivity spends three
+         abstract members on it. "The store could not be reached", "it is empty"
+         and "nothing matches what you typed" are three different problems with
+         three different next steps, and one message for several of them is the
+         silent-empty failure moved into the UI.
+         PickerShellSeamLedgerTest.everyPickerDeclaresThreeDistinctEmptyStateResources
+         fails if any two of these point at one resource.
+
+         🔴 The unreachable one names the MESH, because that is the actionable
+         fact: this store has no public ingress by decision, so the overwhelming
+         cause of a failed read is being off-mesh — not an outage. It also
+         deliberately does NOT say "check the server": the operator's next act
+         is to reconnect, and a capture made meanwhile is queued anyway. -->
+    <string name="clip_empty_unreachable">promptshipper could not reach the shared clipboard. It is only reachable on your private network, so this usually means the phone is off it — anything you capture is queued until it is back.</string>
+
+    <!--
+      🔴 THE OFF-MESH SENTENCE ABOVE WAS SHOWN FOR THESE TOO, AND IT IS A LIE
+      FOR EVERY ONE OF THEM. ClipHttp collapsed a non-200 status, a body that
+      did not parse, an IOException and a RuntimeException into one null, and
+      this screen rendered all four as "usually being off-mesh" — so a REFUSED
+      TOKEN, with the store reachable and answering, sent the reader off to
+      debug the mesh. See ClipFetch.
+
+      Each of these names the thing that is actually wrong and the place it is
+      fixed. They are separate strings rather than one parameterised sentence
+      for the reason stated directly above about the three empty states: they
+      have different next steps.
+    -->
+    <string name="clip_empty_unauthorized">The shared clipboard refused promptshipper\'s token (HTTP %1$d). The store answered, so the network is fine — the clip token in Settings is wrong, expired, or was never pasted.</string>
+    <string name="clip_empty_http">The shared clipboard answered HTTP %1$d. It is reachable, so this is not a network problem — check the clip store URL in Settings, or the store\'s own logs.</string>
+    <string name="clip_empty_malformed">promptshipper reached that address but could not read its answer as a clip list. The clip store URL in Settings is probably pointing at a different service.</string>
+    <string name="clip_empty_none">Nothing on the shared clipboard yet. Highlight text in any app and pick Send to promptshipper.</string>
+    <string name="clip_empty_no_matches">No clips match that.</string>
+
+    <!-- The row's contentDescription, @string/history_row_desc's twin. It says
+         what tapping does, not only what the row is: a screen-reader user
+         meeting a row of free text has no way to know it is a button. -->
+    <string name="clip_row_desc">%1$s — copy this to the clipboard</string>
+
+    <!-- 🔴 Says NOTHING about the body, unlike @string/snip_copied which names
+         the snippet's label. A clip has no label (settled decision 1) and the
+         only thing available to name is the text itself — which is exactly what
+         ClipPickerActivity.sensitive exists to keep off the screen. A toast
+         echoing the body would undo that one line later. -->
+    <string name="clip_copied">Copied to the clipboard</string>
+
+    <!-- Shown beside a row whose device attribution is missing. The row still
+         renders and is still tappable: an unattributed clip is a clip, and a
+         row the user cannot see is one they cannot reach. -->
+    <string name="clip_device_unknown">unknown device</string>
+    <string name="clip_no_body">(empty)</string>
+
+    <!-- ===== What a capture tells the user =============================== -->
+
+    <!-- 🔴 "Queued", not "Sent". The upload is ALWAYS deferred — see
+         ClipOutbox's kdoc for why a POST from a finishing activity loses
+         captures silently — so "Sent" would be a claim the code cannot make.
+         The wording is what tells an off-mesh operator that nothing is lost.
+
+         🔴 And it does NOT echo the captured text, for @string/clip_copied's
+         reason, harder: a capture is more likely than a snippet to be material
+         the user would not want rendered over the app they are in. -->
+    <string name="clip_capture_queued">Captured — it will sync when promptshipper can reach the clip server</string>
+    <!-- The null-extra case. TextView.getSelectedText() returns null when
+         there is no selection and the platform fires the intent anyway, so this
+         is reachable without the user doing anything wrong. A silent return
+         would be indistinguishable from a lost tap. -->
+    <string name="clip_capture_nothing">Nothing was selected, so nothing was captured</string>
+    <!-- 🔴 The failed-write case, and it MUST exist. The outbox is the only
+         copy of the capture and the selection it came from is gone by the time
+         a toast appears, so a success report over a failed write leaves the
+         user believing they have something they do not. This is the opposite
+         posture from SnipUsageStore, which swallows its write failures. -->
+    <string name="clip_capture_failed">promptshipper could not save that capture</string>
+    <!-- 🔴 Its OWN string, not @string/clip_capture_failed. The generic one is
+         true for an oversized selection and useless: it gives the operator no
+         reason not to retry the identical selection. This is also the only
+         moment the selection still exists on screen, which is the argument for
+         bounding at capture time at all — see ClipOutboxStore.MAX_BODY_CHARS.
+         The number is deliberately NOT interpolated: it is 100,000, the
+         platform's own PARCEL_SAFE_TEXT_LENGTH, and a six-digit figure in a
+         toast is noise where "too long to send" is the actionable part. -->
+    <string name="clip_capture_too_large">That selection is too long for the shared clipboard, so it was not captured</string>
+
+    <!-- The two <intent-filter android:label>s. Short VERBS, because the label
+         is the one thing a receiver controls (resolveInfo.loadLabel) and the
+         icon is not — there is no loadIcon anywhere in
+         ProcessTextIntentActionsHandler. The toolbar one is shorter: it sits in
+         a ⋮ overflow beside Cut/Copy/Share. -->
+    <string name="capture_verb">Send to promptshipper</string>
+    <string name="capture_verb_share">Send to promptshipper’s shared clipboard</string>
+
+    <!-- ===== Settings: the clip store's own URL and token ================ -->
+
+    <string name="clip_settings_header">Shared clipboard</string>
+    <string name="clip_settings_desc">The address of the clip server, and its bearer token. A separate token from the transcription one: they reach different services and rotating either must not rotate the other.</string>
+    <string name="clip_url_label">Clip store URL</string>
+    <string name="clip_url_hint">http://100.x.y.z:8139</string>
+    <!-- 🔴 The REJECTION, and nothing was saved. The clip store URL was free
+         text with no validation, and it is the field the capture-loss defect
+         was reached through — a URL that is not the clip store answers 404 to
+         every POST. %1$s is ClipEndpoints.rejectionFor's reason, which is
+         deliberately specific ("it must start with http://") rather than
+         "invalid": a field that says only "invalid" is one the operator
+         retypes at random. The sentence states the consequence too, because
+         the save button also stores the token and the operator must know
+         which half did not happen. -->
+    <string name="stt_url_invalid">The transcription server URL was not saved — %1$s. Nothing on this screen was saved; fix the URL and press Save again.</string>
+    <string name="stt_test_needs_url">Enter the transcription server URL first, or pair with a server from the main screen.</string>
+    <string name="clip_url_invalid">The clip store URL was not saved — %1$s. Nothing on this screen was saved; fix the URL and press Save again.</string>
+    <!-- @string/stt_token_hint_* 's pair, for the clip token. The stored token
+         is NEVER rendered back into the field — see SettingsActivity's kdoc. -->
+    <string name="clip_token_hint_stored">A token is stored. Leave empty to keep it.</string>
+    <string name="clip_token_hint_empty">Paste the clipstore bearer token</string>
+    <!--
+      🔴 "Save clipboard settings", not a bare "Save": there are now TWO save
+      buttons on this screen and a screen reader, or an operator scrolling,
+      must be able to tell which group each one belongs to. Both call the same
+      save() — see the layout comment on @id/clip_save — so the label says
+      which FIELDS are adjacent, never that it saves only them.
+    -->
+    <string name="clip_save">Save clipboard settings</string>
+    <string name="clip_save_desc">Save the clip store URL and token typed above. This also saves the transcription settings higher up the screen.</string>
+    <string name="clip_clear_token">Clear clipboard token</string>
+    <!-- 🔴 The THIRD cue on the destructive control, for the reason
+         @string/stt_clear_token_desc carries: the error ring and the ✕ glyph
+         both identify it without colour vision, and this names the
+         CONSEQUENCE for a screen reader. Additive to the visible label, not a
+         replacement — SettingsThemingTest ledgers every destructive control
+         and requires all three. -->
+    <string name="clip_clear_token_desc">Clear the stored shared-clipboard token. The token is deleted and queued clips stay on this phone until you paste a new one.</string>
+    <string name="clip_token_cleared">Shared-clipboard token cleared.</string>
+    <!-- Carries the exception's CLASS NAME, never its message and never the
+         token: SettingsActivity's save() does the same for the transcription
+         token, because a "Saved" toast over a failed encryption leaves the user
+         sending no token and seeing an unexplained 401. -->
+    <string name="clip_token_save_failed">The shared-clipboard token could not be encrypted (%1$s). It was NOT saved.</string>
+    <!-- Pairing (PairingActivity, MainActivity's server row). docs/pairing.md. -->
+    <string name="section_server">Server</string>
+    <string name="server_unpaired">Not paired. Dictation uses the phone\'s own recognizer until you pair with your promptshipper server.</string>
+    <string name="server_paired">Paired with %1$s</string>
+    <string name="pair_button">Pair with a server</string>
+    <string name="repair_button">Pair again</string>
+    <string name="pairing_title">Pair with a server</string>
+    <string name="pairing_intro">On the computer running the server, run ./setup (or ./setup --pairing) and scan the QR code it shows. You can also paste the text it prints. The code holds your access tokens — scan it only from a screen you trust.</string>
+    <string name="pairing_scan">Scan QR code</string>
+    <string name="pairing_scan_prompt">Scan the promptshipper pairing code</string>
+    <string name="pairing_paste">Paste</string>
+    <string name="pairing_input_hint">{\"v\":1,\"type\":\"promptshipper-pairing\",…}</string>
+    <string name="pairing_waiting">Scan the code or paste its text.</string>
+    <string name="pairing_no_scanner">No QR scanner app answered. Scan the code with your camera app, copy the text it shows, then tap Paste — or install a scanner such as Binary Eye.</string>
+    <string name="pairing_scan_cancelled">Scan cancelled — nothing was read.</string>
+    <string name="pairing_clipboard_empty">The clipboard has no text to paste.</string>
+    <string name="pairing_rejected">Not a usable pairing code — %1$s.</string>
+    <string name="pairing_ready">Ready to pair with %1$s.\nTranscription: %2$s\nShared clipboard: %3$s</string>
+    <string name="pairing_ready_replace">Ready to pair with %1$s.\nTranscription: %2$s\nShared clipboard: %3$s\nThis replaces the server and tokens saved now.</string>
+    <string name="pairing_confirm">Pair</string>
+    <string name="pairing_failed">Pairing failed (%1$s) — nothing was changed. Try again.</string>
+    <string name="pairing_done">Paired with %1$s</string>
+    <!-- DictationClipFeed: opt-in, default off. -->
+    <string name="clip_feed_dictations_label">Send each dictation to my clip feed — every finished transcript is also queued to your clip server, where your agents can read it. Off: nothing about a dictation leaves the phone except the transcription upload.</string>
+    <!-- ClipPush: the agent push. -->
+    <string name="clip_agent_push_label">Let my agents push to my clipboard — while the bubble is on, text your agents send (through the MCP server) is copied to this phone\'s clipboard. Nothing else from the clip server is copied.</string>
+    <string name="clip_push_label">From your agent</string>
+    <string name="clip_push_copied">From your agent — copied to the clipboard</string>
+</resources>

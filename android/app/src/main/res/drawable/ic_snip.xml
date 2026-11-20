@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The snip button's glyph: a pair of braces, for "a snippet".
+
+  🔴 IT WAS A CLIPBOARD, AND THE CLIPBOARD WAS WRONG TWICE OVER. It justified
+  itself as "what the control DOES is put a snippet on the clipboard" — but the
+  control does not: it opens the picker, and the clipboard write happens two
+  taps later, from a row. It was also near-indistinguishable from
+  @drawable/ic_copy, which is an actual clipboard write, so one app carried two
+  clipboard glyphs meaning different things.
+
+  🔴 SCISSORS WAS THE OBVIOUS REPLACEMENT AND IT WAS MEASURED, NOT ASSUMED,
+  THEN REJECTED. The tool is called snip, so Material's `content_cut` is the
+  first thing anyone reaches for. Rendered at the size this is actually drawn
+  at — 24dp inside the 44dp SNIP_DP button, i.e. 72px on the 3x target handset
+  — its blades are thin diagonals that blur into each other and the glyph reads
+  as a smudge. The braces survive the same render legibly. Judge a glyph at the
+  size it is DRAWN, never in a 192px preview. Scissors also carries a
+  destructive "cut" connotation that a button which only opens a list should
+  not.
+
+  STROKED, not filled, unlike every other icon here — those are Material paths,
+  which are fill-only by house style. A brace is a stroke by nature; outlining
+  it to a fill would add dozens of points to say the same thing. VectorDrawable
+  has supported strokeColor/strokeWidth since API 21 and minSdk here is 26, and
+  `imageTintList` at the call site (BubbleService.buildWindow) tints a stroke
+  exactly as it tints a fill, so the one-glyph-serves-any-surface property the
+  old comment claimed is unchanged.
+
+  strokeWidth 2.2 was picked by rendering 1.9 / 2.2 / 2.5 at 72px: 1.9 reads
+  thin beside the mic glyph, 2.5 closes up the brace's inner curve.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M9.2,4.2C7.2,4.2 7.4,6.6 7.4,8.1C7.4,9.9 6.4,10.9 4.6,12c1.8,1.1 2.8,2.1 2.8,3.9c0,1.5 -0.2,3.9 1.8,3.9"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M14.8,4.2c2,0 1.8,2.4 1.8,3.9c0,1.8 1,2.8 2.8,3.9c-1.8,1.1 -2.8,2.1 -2.8,3.9c0,1.5 0.2,3.9 -1.8,3.9"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

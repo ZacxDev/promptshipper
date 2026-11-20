@@ -1,0 +1,179 @@
+name: android
+
+# The Android app (android/). Its own workflow so it does not share a file with
+# the server CI (ci.yml), which other contributors own.
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android*.yml"
+      - "scripts/check-no-private.sh"
+      - "scripts/private-allowlist.txt"
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android*.yml"
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ci.yml's private-data gate already scans the whole tree on every pull
+  # request. This leg scopes the same script to android/ so a finding there is
+  # attributed to the app, and positive-controls it on an android/ path — a
+  # gate that finds nothing is only worth reading once it has been seen to find
+  # something.
+  private-data-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nothing private under android/
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(git ls-files -z android)
+          echo "scanning ${#files[@]} tracked files under android/"
+          [ "${#files[@]}" -gt 100 ] || { echo "too few files — wrong checkout?" >&2; exit 2; }
+          scripts/check-no-private.sh "${files[@]}"
+      - name: Positive control — the gate fails on a planted android/ file
+        run: |
+          set -euo pipefail
+          probe=android/app/src/main/res/values/zz-gate-probe.xml
+          # Assembled from pieces so this workflow file does not trip the gate.
+          printf '<x>http://10.%s.0.9:1</x>\n' 42 > "$probe"
+          set +e
+          scripts/check-no-private.sh "$probe"
+          rc=$?
+          set -e
+          rm -f "$probe"
+          echo "gate exit on the planted file: $rc (want 1)"
+          [ "$rc" -eq 1 ]
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 17 is not optional: compileOptions / kotlinOptions pin 17, and the
+      # test task's --add-opens flags are JDK 9+ module-system syntax.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # The ubuntu-latest image ships the Android SDK; AGP installs
+      # compileSdk 34 / build-tools 34.0.0 from app/build.gradle.kts if missing.
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
+      # The JUnit XML is the authority on what ran. A Gradle task can report
+      # success having executed ZERO tests, so the count is asserted, not
+      # inferred from the task's exit status.
+      #
+      # BASELINE: 1268 tests / 117 classes on the round-1 fix commit (the
+      # commit that sets this line): 1257 measured by run 44663644868 at
+      # 6194fd0, plus +7 ClipPushTest, +1 each PairingPayloadTest,
+      # PairingActivityTest, ClipHttpTest, ClipConfigIngressTest; no new class.
+      # This one is a per-class sum, so the commit's own CI run must report
+      # TOTAL tests=1268; if it does not, re-derive it from that XML.
+      # 1268 * 500 / 575 = 1102.6 -> 1102.
+      # (Previous: 1257 / 117 at 6194fd0, floor 1093; 1243 / 116, floor 1080;
+      # 1228 / 115, floor 1067; 1202 / 111 on dicta's a7bb3e6, floor 1045.) Re-derive it when the suite moves, from the XML of a
+      # CI run, never from a hand count:
+      #     floor = floor(current_total * 500 / 575)      # ~13% slack
+      # and NAME THE TREE you counted on. TestCountFloorTest fails if this floor
+      # is above the suite or more than 20% below it, and parses the number out
+      # of THIS file — one number, one place. (android/android.nix must not
+      # restate it; the same test pins that.)
+      - name: Assert tests actually ran
+        if: always()
+        run: python3 scripts/assert-tests-ran.py --min 1102
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-results
+          path: |
+            android/app/build/reports/tests/testDebugUnitTest/
+            android/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
+
+      # 🔴 THROWAWAY KEYS, FOR BUILDS THAT ARE NEVER PUBLISHED. This workflow
+      # runs on pull requests and has no access to the release secrets, by
+      # design. The debug signing config is explicit (AGP does not mint one),
+      # and the release build refuses to run without PROMPTSHIPPER_RELEASE_*,
+      # so both keys are generated here.
+      - name: Mint throwaway keystores
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -noprompt \
+            -keystore "${RUNNER_TEMP}/throwaway-debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 1 \
+            -dname 'CN=throwaway CI debug key'
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "${RUNNER_TEMP}/throwaway-release.jks" \
+            -storepass throwaway -keypass throwaway \
+            -alias throwaway -keyalg RSA -keysize 2048 -validity 1 \
+            -dname 'CN=throwaway CI release key'
+
+      - name: Assemble debug APK
+        run: |
+          ./gradlew :app:assembleDebug --no-daemon \
+            -Ppromptshipper.debugKeystore="${RUNNER_TEMP}/throwaway-debug.keystore"
+
+      # The release build must refuse to run unsigned. Measured here, on the
+      # runner, rather than asserted: no PROMPTSHIPPER_RELEASE_* in the env.
+      - name: Release build refuses without a key
+        run: |
+          set +e
+          ./gradlew :app:assembleRelease --no-daemon -q > "${RUNNER_TEMP}/norelease.log" 2>&1
+          rc=$?
+          set -e
+          grep -q 'refusing to build a release APK' "${RUNNER_TEMP}/norelease.log" || {
+            echo "the refusal message is missing (rc=$rc):" >&2
+            tail -20 "${RUNNER_TEMP}/norelease.log" >&2
+            exit 1
+          }
+          [ "$rc" -ne 0 ]
+          if ls app/build/outputs/apk/release/*.apk >/dev/null 2>&1; then
+            echo "a release APK was produced without a key" >&2
+            exit 1
+          fi
+
+      - name: Assemble release APK (throwaway key)
+        env:
+          PROMPTSHIPPER_RELEASE_KEYSTORE: ${{ runner.temp }}/throwaway-release.jks
+          PROMPTSHIPPER_RELEASE_STORE_PASSWORD: throwaway
+          PROMPTSHIPPER_RELEASE_KEY_ALIAS: throwaway
+          PROMPTSHIPPER_RELEASE_KEY_PASSWORD: throwaway
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      # The published build is not debuggable — checked on the APK. The DEBUG
+      # APK is the negative control: the script must see it as debuggable, or
+      # its verdict on the release APK proves nothing.
+      - name: Release APK is not debuggable (debug APK as the control)
+        run: |
+          set -euo pipefail
+          scripts/assert-apk-not-debuggable.sh app/build/outputs/apk/debug/app-debug.apk --expect-debuggable
+          scripts/assert-apk-not-debuggable.sh app/build/outputs/apk/release/app-release.apk
+
+      # 🔴 COMPILES androidTest, which neither task above does. Without this the
+      # instrumentation source set is invisible to the gate. Compiles only —
+      # the device tests need a handset and a paired server.
+      - name: Compile instrumentation tests
+        run: |
+          ./gradlew :app:assembleDebugAndroidTest --no-daemon \
+            -Ppromptshipper.debugKeystore="${RUNNER_TEMP}/throwaway-debug.keystore"

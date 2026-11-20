@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The floating dictation card — RADICALLY MINIMAL.
+
+  ## What is present at rest, and what is not
+
+  At rest this card contains the transcript, one mic control, and the four
+  actions. Removed by the 2026-10 design pass:
+
+    * the "Dicta" title TextView — the card only ever appears because the user
+      just tapped a Dicta trigger, so it named the app to someone who had just
+      named it themselves;
+    * the full-bleed mic Button, which is now a centred pill.
+
+  Kept, because the layout is not the only consumer: @id/status_text,
+  @id/dictated_text, @id/mic_button, @id/attachment_note, @id/copy_button,
+  @id/screenshot_button, @id/share_button, @id/close_button and
+  @id/dictate_card all still exist with the same ids and the same view types.
+
+  ## 🔴 THE OVERFLOW IS GONE — do not bring it back
+
+  The design pass hid the four actions behind an @id/more_button overflow, with
+  a TextWatcher auto-revealing @id/action_row once the transcript went
+  non-empty, and @string/dictate_hint naming the "⋯" route in words. All three
+  mechanisms existed to make a HIDDEN control findable.
+
+  The operator's instruction retires the problem rather than the mitigations:
+  "remove the button to toggle action buttons. Just always show the action
+  buttons." So @id/more_button, its two strings, its drawable and its ghost
+  background are deleted, @id/action_row carries no visibility attribute, and
+  nothing in DictateActivity sets one. OverlayMinimalLayoutTest pins the row
+  visible in the XML default AND in every transcript state, and its icon-control
+  ledger fails if a fifth ImageButton reappears.
+
+  ## Why still a ScrollView
+
+  Unchanged reason: the window is a floating dialog with WRAP_CONTENT height,
+  and on a landscape phone (~411dp usable, minus the 12dp window inset top and
+  bottom) the column can be taller than the window. Without a scroll container
+  the bottom of the card is clipped off rather than scrolled. Pinned by
+  FloatingWindowSizeTest.theCardScrollsRatherThanClipping.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/card_bg"
+    android:clipToOutline="true">
+
+    <!--
+      🔴 focusable + focusableInTouchMode on the CARD ROOT is not decoration.
+
+      @id/dictated_text is the only other view that can hold focus in touch
+      mode, and DictateActivity.renderPreview refuses to overwrite a FOCUSED
+      transcript box ("don't clobber the cursor while the user is editing") —
+      so a box that holds focus silently swallows an incoming transcript.
+      `parkFocusOffTheTranscript()` needs somewhere to put focus instead, and
+      it used to use @id/mic_button. That control is now GONE in exactly the
+      states the park is needed in (a hidden view cannot take focus), so the
+      target has to be a view that is always present. This is it.
+    -->
+    <LinearLayout
+        android:id="@+id/dictate_card"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:padding="20dp">
+
+        <!--
+          ========================= THE STATUS STRIP =========================
+          🔴 ISSUE #9: @id/status_text USED TO LIVE IN THIS ROW and no longer
+          does. It was maxLines=1 + ellipsize=end, sharing a 801px strip with
+          the 72dp meter, which left it 555px — about 30 characters. The
+          longest strings it carries (@string/stt_fell_back_retrying,
+          @string/stt_tier_remote_only) are several times that, so the user
+          never saw the half of the sentence that says what happens NEXT
+          ("…the server transcript is on its way"). No amount of maxLines
+          rescues it inside this row. It therefore sits BELOW the strip at
+          full card width. Pinned by OverlayMinimalLayoutTest's
+          theStatusLineSpansTheFullCardWidth and
+          noStatusStringOutgrowsItsLineBudget.
+
+          ⚠ RETRACTED FIGURES, NOT CORRECTED ONES. This comment used to say
+          those two strings "are 154 and 145 characters", and the width note
+          further down said "strings up to 154". Both are false and appear
+          never to have been true: measured against the live resources the
+          two lengths match 154/145 in NO unit, raw or with a realistic %1$s
+          filler, and neither string has changed since 843e4f2.
+
+          🔴 They are deliberately NOT replaced with today's numbers — not
+          even as a correction. A length copied into a comment is a claim
+          nothing re-checks, which is exactly how these two survived long
+          enough for a maintainer to budget copy against them, and a
+          "corrected" figure goes stale the same way on the next copy edit.
+          OverlayMinimalLayoutTest derives the longest status string from the
+          resources, asserts it against the line budget, and prints the real
+          string and its real length in the failure message. That test is the
+          only place a figure belongs.
+
+          This row now carries two things, both GONE at rest. Both were
+          RESERVED stubs
+          for in-flight work on another branch; that branch (remote STT) has
+          landed and both are now BOUND to real state. The reservation held —
+          the merge was the mechanical swap the stubs were shaped for — so what
+          follows documents the live contract, not a promise:
+
+            @id/level_meter   a 4dp horizontal mic-level meter, 72dp x 4dp,
+                              placed FIRST in the strip so it reads
+                              left-to-right as "input is arriving" before the
+                              words do. Now a ProgressBar (style
+                              ?android:attr/progressBarStyleHorizontal) with
+                              @drawable/meter_progress — the reserved
+                              @drawable/meter_track_bg track under a
+                              @color/dicta_accent level. Bound by
+                              DictateActivity.onLevel. Works with no partials:
+                              deliberately independent of @id/dictated_text.
+
+            @id/engine_badge  an 11sp pill (@drawable/badge_bg,
+                              @color/dicta_on_accent_container at 9.84:1)
+                              naming which engine produced the current text.
+                              Bound by DictateActivity.showEngine(fromRemote)
+                              to @string/engine_badge_remote or
+                              @string/engine_badge_local — SHORT words, not the
+                              status line's sentence. It used to carry
+                              @string/stt_remote_done, which the status line
+                              also carries for a plain remote success, so the
+                              card said "Transcribed by the server" twice.
+                              Still placed LAST, now
+                              simply so the meter leads; the older reason ("so
+                              it does not shift the status text") retired with
+                              the #9 move — there is no longer any status text
+                              in this row to shift. It carries a
+                              contentDescription of its own because a short
+                              badge is not self-describing to a screen reader.
+                              (Reserved as @id/engine_badge, built on the
+                              branch as @id/engine_label; this id won the
+                              merge. See the view's own comment.)
+
+          🔴 Do not encode engine or in-flight state in colour alone: the badge
+          exists so there is always a WORD.
+
+          OverlayMinimalLayoutTest pins this strip: the membership and ORDER of
+          the three children, that the meter and the badge are GONE in the
+          layout's at-rest default, that both are labelled, and — since the
+          reservation was filled — that both actually become visible and
+          carry text/level once a dictation drives them.
+          =================================================================
+        -->
+        <LinearLayout
+            android:id="@+id/overlay_status_strip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:baselineAligned="false">
+
+            <!--
+              The microphone level meter — the design's reserved 72dp x 4dp slot,
+              now carrying the remote-STT branch's real implementation. The swap
+              is the one this file's header prescribed: a ProgressBar styled
+              ?android:attr/progressBarStyleHorizontal, whose progressDrawable
+              (@drawable/meter_progress) layers the reserved
+              @drawable/meter_track_bg track under a @color/dicta_accent level.
+
+              🔴 Not decoration. In the remote-only degradation tiers no partial
+              text ever appears while recording, so this bar is the ONLY
+              on-screen evidence that the microphone is live. Without it
+              "nothing is moving" is indistinguishable from a dead capture — and
+              a dead capture is a real state here, because Android enforces its
+              one-capture-at-a-time policy by silently feeding the loser exact
+              zeros. DictateActivity.onLevel binds progress; onClientSilenced
+              flips it to INVISIBLE (not GONE) so the strip does not reflow when
+              another app steals the mic.
+
+              GONE is the LAYOUT default only — it is the at-rest state, before
+              a dictation starts, not an "unbound stub" any more.
+            -->
+            <ProgressBar
+                android:id="@+id/level_meter"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="72dp"
+                android:layout_height="4dp"
+                android:layout_marginEnd="10dp"
+                android:max="100"
+                android:progress="0"
+                android:progressDrawable="@drawable/meter_progress"
+                android:contentDescription="@string/level_meter_desc"
+                android:visibility="gone" />
+
+            <!-- Pushes the badge to the trailing edge now that the status
+                 text no longer takes the row's spare weight. -->
+            <Space
+                android:id="@+id/status_strip_spacer"
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <!--
+              Which engine produced the text currently in the box. The server
+              and the phone disagree, sometimes materially, so the user has to
+              be able to tell them apart rather than trust whatever appeared.
+              DictateActivity.showEngine(fromRemote) binds the text.
+
+              🔴 This view was @id/engine_label on the remote-STT branch and
+              @id/engine_badge in the design pass's reservation. ONE id
+              survived the merge — this one — because the design side owns more
+              references (this layout, @string/engine_badge_desc,
+              @drawable/badge_bg, OverlayMinimalLayoutTest's strip ledger) and
+              because "badge" names what it renders as. The branch's two
+              references were renamed to match.
+
+              maxLines=1: the strip is one row, and the two bound strings are
+              short. If longer copy ever lands here it must shrink, not reflow
+              the card — the long-form fallback explanation belongs in
+              @id/status_text, which already takes the weight and ellipsizes.
+            -->
+            <TextView
+                android:id="@+id/engine_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:background="@drawable/badge_bg"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:textColor="@color/dicta_on_accent_container"
+                android:contentDescription="@string/engine_badge_desc"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!--
+          The live status line — the card's first words.
+
+          🔴 FULL CARD WIDTH, AND NOT ONE LINE. This is the #9 fix. It used to
+          be a weighted child of @id/overlay_status_strip above, capped at
+          maxLines=1 with ellipsize=end, which on this 1080px device left it
+          555px — roughly 30 characters — for status copy several times that
+          long (the figure "strings up to 154" that stood here is retracted;
+          see the STATUS STRIP comment above for why no number replaces it).
+          Everything after the first clause was replaced by an ellipsis,
+          including the half that tells the user what happens next.
+
+          maxLines=4 at full width clears the longest string with margin —
+          the budget is REQUIRED_STATUS_LINES x CHARS_PER_STATUS_LINE in
+          OverlayMinimalLayoutTest, which owns both constants, rather than an
+          arithmetic result restated here. ellipsize=end is kept only as a
+          backstop for copy added later; if it ever actually engages, this
+          view needs another line, not a shorter sentence — the card is a
+          ScrollView and can afford the height.
+
+          🔴 WHAT IS AND IS NOT PINNED. The guard is a CHARACTER-COUNT budget:
+          OverlayMinimalLayoutTest derives the longest status string from the
+          resources and compares its LENGTH against the budget above, and
+          separately asserts this view's real inflated width equals the card's
+          inner width. It does NOT measure rendered text, and **rendered wrap
+          is not pinned at all** — it cannot be under Robolectric, whose
+          measureText returns a flat 1.0px per character and whose
+          getEllipsisCount returns 0 even for a 4000-character string (that
+          dead end is written up in the test). Whether the words actually fit
+          on this device is confirmed by screenshot, not by the suite.
+
+          ⚠ This paragraph used to end "OverlayMinimalLayoutTest measures the
+          real longest string against the real inflated width rather than
+          trusting this arithmetic." No test does that, and the file's own
+          dead-end note says it is impossible by construction — so a
+          maintainer could read it, believe wrap was covered, widen the copy,
+          and ship a status line that truncates on device with every test
+          green.
+        -->
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/dictate_hint"
+            android:textSize="12sp"
+            android:maxLines="4"
+            android:ellipsize="end"
+            android:lineSpacingExtra="1dp"
+            android:textColor="@color/dicta_on_surface_variant" />
+
+        <!--
+          The transcript: the hero, and the reason the card exists. 17sp rather
+          than the platform default because this is the content, not a form
+          field, and minLines 3 rather than 4 — with the title and the action
+          row gone the card no longer needs a tall box to look balanced.
+          @color/dicta_on_surface measures 14.01:1 on the card.
+        -->
+        <EditText
+            android:id="@+id/dictated_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minLines="3"
+            android:gravity="top"
+            android:hint="@string/dictate_text_hint"
+            android:textSize="17sp"
+            android:lineSpacingExtra="3dp"
+            android:textColor="@color/dicta_on_surface"
+            android:textColorHint="@color/dicta_on_surface_variant"
+            android:background="@drawable/input_bg"
+            android:padding="14dp"
+            android:inputType="textMultiLine|textCapSentences" />
+
+        <!-- Shown only once a screenshot has actually been attached. The note is
+             not decoration: many share targets drop EXTRA_TEXT when a stream is
+             present, so the user needs to know Copy is the reliable text path. -->
+        <TextView
+            android:id="@+id/attachment_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="12sp"
+            android:textColor="@color/dicta_on_surface_variant"
+            android:visibility="gone"
+            android:text="@string/screenshot_attached_note" />
+
+        <!--
+          The control row: the stop/fallback control, and (in the history mode
+          only) the re-transcribe button. The overflow that used to share this
+          row is gone — see the header.
+
+          🔴 THE ROW IS EMPTY AT REST, AND THAT IS THE POINT. @id/mic_button is
+          `gone` in this layout's default and stays gone unless DictateActivity
+          puts it into one of its two remaining roles — STOP (a capture that is
+          already running) or the mic-denied system-voice-typing fallback. The
+          overlay used to show it labelled "Speak" on the finished transcript,
+          which is a second recording one tap from the card that exists to show
+          the first; the operator asked for that to go, so the role and
+          @string/start_dictation went with it. Starting a recording is the
+          floating bubble's job.
+
+          @id/mic_button stays a Button (not an ImageButton) on purpose: the
+          label is what keeps the recording state off colour-only footing. It
+          is styled as an accent pill with the mic glyph as a compound drawable
+          instead. The XML default label is "Stop" because that is the role any
+          unlabelled reveal would be — never a start.
+
+          OverlayNeverStartsARecordingTest pins both halves: this default, and
+          that in every reachable card state the control is either GONE or
+          carrying @string/stop_dictation / @string/use_system_voice_typing.
+        -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/mic_button"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:background="@drawable/mic_pill_bg"
+                android:drawableStart="@drawable/ic_mic"
+                android:drawableTint="@color/dicta_on_accent"
+                android:drawablePadding="8dp"
+                android:paddingStart="22dp"
+                android:paddingEnd="22dp"
+                android:stateListAnimator="@null"
+                android:textColor="@color/dicta_on_accent"
+                android:textSize="15sp"
+                android:textAllCaps="false"
+                android:visibility="gone"
+                android:text="@string/stop_dictation" />
+
+            <!--
+              Re-transcribe. GONE at rest and SHOWN ONLY in the history mode
+              (DictateLaunch.EXTRA_HISTORY_ID), where @id/mic_button is hidden
+              in the same breath.
+
+              🔴 Why a separate control rather than relabelling the mic pill,
+              which would have cost no XML at all: @id/mic_button's listener is
+              `toggleDictation()`, i.e. it opens the microphone. A history card
+              is the one state in this app where the microphone must not be
+              touched — the whole point of RemoteTranscriber is an upload-only
+              path — and "the same button, with a different label and a swapped
+              listener" makes that a property of whichever assignment ran last.
+              Two buttons makes it a property of the layout, and "mic_button is
+              GONE on a history card" is then a state assertion a test can make.
+
+              A Button, not an ImageButton: OverlayMinimalLayoutTest ledgers the
+              ImageButton set precisely so an icon-only control cannot escape
+              its label assertions, and this control is not icon-only — it is a
+              word, which is what the repo's "never carry state by colour or
+              position alone" rule wants here anyway.
+            -->
+            <Button
+                android:id="@+id/retranscribe_button"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:background="@drawable/outline_button_bg"
+                android:paddingStart="22dp"
+                android:paddingEnd="22dp"
+                android:stateListAnimator="@null"
+                android:textColor="@color/dicta_on_surface"
+                android:textSize="15sp"
+                android:textAllCaps="false"
+                android:visibility="gone"
+                android:text="@string/history_retranscribe" />
+
+        </LinearLayout>
+
+        <!--
+          The actions. ALWAYS ON SCREEN — no default visibility attribute, and
+          nothing in DictateActivity touches this row's visibility.
+
+          🔴 It used to be GONE, revealed by an @id/more_button overflow or
+          automatically once the transcript went non-empty. The operator asked
+          for the toggle to go and the actions to be unconditional, so both
+          reveal routes and the overflow itself were deleted. Do not
+          re-introduce a "reveal" here: an action the user can see is the
+          point, and the states where an action refuses ("Nothing to copy
+          yet…") are handled by the action, not by hiding it.
+
+          Still icon-only and still 4 children, unchanged ids and unchanged
+          order. Each is 48dp tall (the minimum touch target) and each keeps
+          BOTH contentDescription and tooltipText.
+
+          🔴 Two ledgers cover this row: DictateActionViewTypesTest asserts its
+          child-id set, and OverlayMinimalLayoutTest's icon-control ledger now
+          holds exactly the same four — the overflow was the one icon control
+          outside the row, and it is gone.
+        -->
+        <LinearLayout
+            android:id="@+id/action_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp">
+
+            <ImageButton
+                android:id="@+id/copy_button"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_copy"
+                android:scaleType="center"
+                android:background="@drawable/icon_button_bg"
+                android:tint="@color/dicta_on_surface"
+                android:contentDescription="@string/copy"
+                android:tooltipText="@string/copy" />
+
+            <ImageButton
+                android:id="@+id/screenshot_button"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_screenshot"
+                android:scaleType="center"
+                android:background="@drawable/icon_button_bg"
+                android:tint="@color/dicta_on_surface"
+                android:contentDescription="@string/screenshot"
+                android:tooltipText="@string/screenshot" />
+
+            <ImageButton
+                android:id="@+id/share_button"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_send"
+                android:scaleType="center"
+                android:background="@drawable/icon_button_bg"
+                android:tint="@color/dicta_on_surface"
+                android:contentDescription="@string/share"
+                android:tooltipText="@string/share" />
+
+            <!--
+              Save audio — hands the stored .ogg to the share sheet.
+
+              🔴 DISABLED at rest rather than GONE, unlike @id/retranscribe_button
+              in the row above. This row is documented as unconditional — "an
+              action the user can see is the point, and the states where an
+              action refuses are handled by the action, not by hiding it" — so a
+              control that appeared only once the recording had been filed would
+              be a reveal in the one row that must not have reveals. It enables
+              when DictationSession reports the history id.
+            -->
+            <ImageButton
+                android:id="@+id/save_audio_button"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_save_audio"
+                android:scaleType="center"
+                android:background="@drawable/icon_button_bg"
+                android:tint="@color/dicta_on_surface"
+                android:enabled="false"
+                android:contentDescription="@string/save_audio"
+                android:tooltipText="@string/save_audio" />
+
+            <ImageButton
+                android:id="@+id/close_button"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_close"
+                android:scaleType="center"
+                android:background="@drawable/icon_button_bg"
+                android:tint="@color/dicta_on_surface"
+                android:contentDescription="@string/close"
+                android:tooltipText="@string/close" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

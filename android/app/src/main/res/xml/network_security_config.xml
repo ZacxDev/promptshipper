@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP: permitted by the PLATFORM, gated by the APP.
+
+  promptshipper's servers have no TLS of their own and are reached over a
+  private network (a Tailscale tailnet, a home LAN, a VPN), so the pairing
+  payload carries http://<private IP>:<port> (docs/pairing.md, "URL rules").
+  The address is only known once the user pairs, and a network security config
+  can only name DOMAINS — it has no way to say "any address in 10.0.0.0/8" or
+  "100.64.0.0/10". So cleartext cannot be scoped here, and pretending otherwise
+  (a <domain> per example address) would only break pairing.
+
+  🔴 The scoping is therefore done in code, in ONE place:
+  dev.zacx.promptshipper.PrivateNetwork. It allows plain http:// only to an IP
+  literal in a private range (RFC 1918, CGNAT 100.64.0.0/10, loopback,
+  fd00::/8) and requires https:// for every hostname and every public address.
+  It is applied when a URL is stored (pairing, Settings, the debug door) AND
+  again when a connection is opened (PrivateNetwork.open, the production
+  factory of both HTTP clients, which also refuses to follow redirects).
+  NetworkManifestTest pins this file and that wiring together.
+
+  The app talks to nothing but the two servers the user configured, so this
+  base-config is the whole policy; there is no third-party traffic to protect.
+-->
+<network-security-config>
+
+    <!-- See above: the private-range rule is PrivateNetwork, not this file. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+</network-security-config>
