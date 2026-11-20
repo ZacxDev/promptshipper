@@ -103,13 +103,13 @@ terminal:
 
 ```sh
 mkdir -p ~/.config/promptshipper
-(umask 077; ./setup --pairing --no-qr | sed -n 's/^PAIRING_PAYLOAD=//p' > ~/.config/promptshipper/pairing.json)
+(umask 077; ./setup --pairing --for desktop --no-qr | sed -n 's/^PAIRING_PAYLOAD=//p' > ~/.config/promptshipper/pairing.json)
 ```
 
-(The phone form also contains the STT token, which this server does not use.
-After `./setup --rotate`, re-run the line above. `stt` being optional is the
-format change `docs/pairing.md` is getting in the clip-server PR, #7; until that
-lands, that document still describes `stt` as required.)
+`--for desktop` writes the clip-only form: no `stt` object, so the STT token,
+which this server does not use, never lands on this machine. (The default
+`--for phone` code carries both tokens.) After `./setup --rotate`, re-run the
+line above.
 
 ### Claude Code
 

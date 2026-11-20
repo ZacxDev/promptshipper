@@ -139,11 +139,14 @@ suspended, with no reconnection protocol to get right.
 
 #### The auto-copy contract (for a feed-aware app)
 
-No app listens to this feed yet. The Android app **will** poll it while its
-bubble service runs, and a feed-aware app **will auto-copy to the system
-clipboard ONLY clips whose `device` is exactly `mcp`** — text an agent pushed
-via the MCP server. Every other clip (captured on a phone, a laptop, by snip)
-will be listed but never copied unasked. So:
+The Android app consumes this feed: while its bubble service is in the
+foreground and its agent-push setting is on (the default), it long-polls
+`GET /v1/clips?after=…&wait=…` (`ClipPushListener` / `ClipPush.kt`) and
+**auto-copies to the system clipboard ONLY clips whose `device` is exactly
+`mcp`** — text an agent pushed via the MCP server. Every other clip (captured on
+a phone, a laptop, by snip) is listed but never copied unasked. On its first
+start it begins at `head` and copies nothing; after a gap it copies only the
+newest `mcp` clip of the backlog. So:
 
 * the MCP server (and anything else meant to land on the phone's clipboard)
   POSTs with `"device":"mcp"`;
