@@ -162,17 +162,17 @@ is_private() {
 # fails. `::` may appear once and stands for at least one zero group.
 ipv6_groups() {
   local s head tail grp='([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?'
-  local -a h=() t=()
+  local -a hd=() tl=()
   s=$(printf '%s' "$1" | tr 'A-F' 'a-f')
   if [[ "$s" == *::* ]]; then
     head=${s%%::*} tail=${s#*::}
     [[ "$head" =~ ^${grp}$ && "$tail" =~ ^${grp}$ ]] || return 1
-    [[ -n "$head" ]] && IFS=: read -ra h <<<"$head"
-    [[ -n "$tail" ]] && IFS=: read -ra t <<<"$tail"
-    ((${#h[@]} + ${#t[@]} <= 7)) || return 1
-    g=("${h[@]}")
-    while ((${#g[@]} + ${#t[@]} < 8)); do g+=(0); done
-    g+=("${t[@]}")
+    [[ -n "$head" ]] && IFS=: read -ra hd <<<"$head"
+    [[ -n "$tail" ]] && IFS=: read -ra tl <<<"$tail"
+    ((${#hd[@]} + ${#tl[@]} <= 7)) || return 1
+    g=("${hd[@]}")
+    while ((${#g[@]} + ${#tl[@]} < 8)); do g+=(0); done
+    g+=("${tl[@]}")
   else
     [[ "$s" =~ ^${grp}$ && -n "$s" ]] || return 1
     IFS=: read -ra g <<<"$s"
