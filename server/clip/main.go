@@ -35,6 +35,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -42,6 +43,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// writeTimeout is the server's per-response write deadline; see main.
+const writeTimeout = (MaxWaitSeconds + 30) * time.Second
 
 // tokenEnv is the only way the bearer token is supplied. There is no flag for
 // it: a flag value is visible in the pod's argv and in `kubectl describe`.
@@ -99,6 +103,30 @@ func tokenRefusal(token string) string {
 		tokenEnv, len(token), MinTokenBytes)
 }
 
+// tokenScanner is the slice of the store the startup scan needs.
+type tokenScanner interface {
+	CountContaining(ctx context.Context, needle string) (int64, error)
+}
+
+// reportTokenClips is the one-time startup scan: it reports HOW MANY stored
+// clips contain this server's own token — never which, never their content,
+// never the token — and that the token must be ROTATED. Deleting those clips
+// is not the fix: a token that sat in a readable clip may already have been
+// read, and only rotation retires it. POST refuses such clips (422), so any
+// found predate that guard. A scan failure is logged and does not stop the
+// server: it is a hygiene report, not a precondition.
+func reportTokenClips(ctx context.Context, s tokenScanner, token string, out io.Writer) {
+	n, err := s.CountContaining(ctx, token)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "clipstore: WARNING: could not scan stored clips for this server's token: %v\n", err)
+	case n > 0:
+		fmt.Fprintf(out, "clipstore: WARNING: %d stored clip(s) contain this server's own access token. "+
+			"Anything that can read clips may already have read it: rotate the token with "+
+			"./setup --rotate (then re-pair your devices).\n", n)
+	}
+}
+
 func main() {
 	addr := flag.String("addr", ":8139",
 		"listen address. 8139 is the port the container image exposes.")
@@ -120,6 +148,8 @@ func main() {
 	}
 	defer store.Close()
 
+	reportTokenClips(context.Background(), store, token, os.Stderr)
+
 	api := NewAPI(store, token, time.Now)
 	srv := &http.Server{
 		Addr:              *addr,
@@ -127,8 +157,11 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		// A clip body can be 256 KiB over a VPN link from a phone on mobile
 		// data; 60s is generous for that and still bounded.
-		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		ReadTimeout: 60 * time.Second,
+		// Must outlast the longest long-poll (MaxWaitSeconds) plus the write of
+		// its answer, or the server would cut every full-length wait.
+		// TestTheWriteTimeoutOutlastsTheLongestWait pins it.
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -144,6 +177,8 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		// Release long-poll waiters first, or Shutdown sits out a 60 s wait.
+		api.Shutdown()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("clipstore: shutdown: %v", err)
 		}

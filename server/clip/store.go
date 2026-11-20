@@ -34,6 +34,10 @@ type Clip struct {
 	// Put's comment for why a one-statement upsert cannot otherwise report
 	// whether it inserted or bumped.
 	BumpCount int64 `json:"bump_count"`
+	// Seq is the change-feed cursor: a counter that only ever grows, set on
+	// INSERT and on every dedup BUMP, never reused after a delete. Poll the
+	// feed with after=<largest seq seen>. See ensureSeq and README.md.
+	Seq int64 `json:"seq"`
 }
 
 // Store is the SQLite-backed clip store.
@@ -116,7 +120,16 @@ CREATE TABLE IF NOT EXISTS clips (
   body_sha256 TEXT    NOT NULL UNIQUE,
   device      TEXT    NOT NULL,
   created_at  INTEGER NOT NULL,
-  bump_count  INTEGER NOT NULL DEFAULT 0
+  bump_count  INTEGER NOT NULL DEFAULT 0,
+  seq         INTEGER NOT NULL DEFAULT 0
+);
+
+-- The feed's counter. ONE row, and it only ever grows: deriving seq from
+-- MAX(seq) would hand a deleted top row's seq out again, behind a cursor
+-- that has already passed it.
+CREATE TABLE IF NOT EXISTS clip_seq (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  value INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS clips_by_recency ON clips (created_at DESC, id DESC);
@@ -172,6 +185,10 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema to %s: %w", path, err)
 	}
+	if err := ensureSeq(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ensure seq on %s: %w", path, err)
+	}
 	rebuilt, err := ensureTrigramIndex(db)
 	if err != nil {
 		db.Close()
@@ -203,6 +220,61 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("fts5 probe on %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
+}
+
+// ensureSeq adds and seeds the change-feed cursor on a database created before
+// `seq` existed, and makes sure the counter row and the unique index exist. One
+// transaction, idempotent: a second run changes nothing.
+//
+// Migrated rows get seq = id, so a client whose cursor was an id from the
+// id-based feed keeps its place. The counter starts at the larger of the
+// highest seq and the highest id AUTOINCREMENT ever issued (sqlite_sequence),
+// so every new seq is past anything a client could already hold.
+func ensureSeq(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var has int
+	if err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('clips') WHERE name = 'seq'`).Scan(&has); err != nil {
+		return fmt.Errorf("read clips columns: %w", err)
+	}
+	if has == 0 {
+		if _, err := tx.Exec(`ALTER TABLE clips ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add seq column: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE clips SET seq = id`); err != nil {
+			return fmt.Errorf("seed seq: %w", err)
+		}
+		log.Printf("clipstore: migrated clips to the seq change-feed cursor (seq = id for existing rows)")
+	}
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO clip_seq (id, value) VALUES (1, max(
+		  coalesce((SELECT max(seq) FROM clips), 0),
+		  coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'clips'), 0)))`); err != nil {
+		return fmt.Errorf("seed the seq counter: %w", err)
+	}
+	// 🔴 NOT UNIQUE, ON PURPOSE. Uniqueness is already guaranteed by the
+	// counter, stepped in the same transaction as every write. A UNIQUE index
+	// would turn a ROLLBACK to the pre-seq binary into an outage: its INSERT
+	// leaves seq = 0, so the second such row violates the index and every POST
+	// after it is a 503. An index from an earlier cut that WAS unique is
+	// replaced here.
+	var unique int
+	err = tx.QueryRow(`SELECT "unique" FROM pragma_index_list('clips') WHERE name = 'clips_by_seq'`).Scan(&unique)
+	switch {
+	case err == nil && unique != 0:
+		if _, err := tx.Exec(`DROP INDEX clips_by_seq`); err != nil {
+			return fmt.Errorf("drop the unique seq index: %w", err)
+		}
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("read the seq index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS clips_by_seq ON clips (seq)`); err != nil {
+		return fmt.Errorf("index seq: %w", err)
+	}
+	return tx.Commit()
 }
 
 // startupProbeNeedle is the string OpenStore's FTS5 control searches for. It is
@@ -401,18 +473,35 @@ func BodyHash(body string) string {
 // a second, unasked-for history.
 func (s *Store) Put(ctx context.Context, body, device string, nowMillis int64) (Clip, bool, error) {
 	c := Clip{Body: body, Device: device}
-	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO clips (body, body_sha256, device, created_at)
-		VALUES (?, ?, ?, ?)
+	// The counter step and the upsert are ONE transaction, so a seq is never
+	// consumed without a row carrying it and two writes never share one. A
+	// BUMP takes a new seq too: that is what delivers a re-push to the feed.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Clip{}, false, fmt.Errorf("begin upsert: %w", err)
+	}
+	defer tx.Rollback()
+	var seq int64
+	if err := tx.QueryRowContext(ctx,
+		`UPDATE clip_seq SET value = value + 1 WHERE id = 1 RETURNING value`).Scan(&seq); err != nil {
+		return Clip{}, false, fmt.Errorf("next seq: %w", err)
+	}
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO clips (body, body_sha256, device, created_at, seq)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (body_sha256) DO UPDATE SET
 		  created_at = excluded.created_at,
 		  device     = excluded.device,
-		  bump_count = clips.bump_count + 1
-		RETURNING id, created_at, bump_count`,
-		body, BodyHash(body), device, nowMillis,
-	).Scan(&c.ID, &c.CreatedAt, &c.BumpCount)
+		  bump_count = clips.bump_count + 1,
+		  seq        = excluded.seq
+		RETURNING id, created_at, bump_count, seq`,
+		body, BodyHash(body), device, nowMillis, seq,
+	).Scan(&c.ID, &c.CreatedAt, &c.BumpCount, &c.Seq)
 	if err != nil {
 		return Clip{}, false, fmt.Errorf("upsert clip: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Clip{}, false, fmt.Errorf("commit upsert: %w", err)
 	}
 	return c, c.BumpCount > 0, nil
 }
@@ -452,7 +541,7 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 		// unfiltered list worked, which is exactly the shape of bug a handler
 		// that answered `[]` on error would have hidden as "nothing matched".
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT c.id, c.body, c.device, c.created_at, c.bump_count
+			SELECT c.id, c.body, c.device, c.created_at, c.bump_count, c.seq
 			FROM clips c
 			WHERE c.id IN (SELECT rowid FROM clips_fts WHERE clips_fts MATCH ?)
 			ORDER BY c.created_at DESC, c.id DESC
@@ -475,7 +564,7 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 		}
 		args = append(args, limit)
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT c.id, c.body, c.device, c.created_at, c.bump_count
+			SELECT c.id, c.body, c.device, c.created_at, c.bump_count, c.seq
 			FROM clips c
 			WHERE `+strings.Join(conds, " AND ")+`
 			ORDER BY c.created_at DESC, c.id DESC
@@ -483,7 +572,7 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 
 	default: // SearchAll — no query, the plain newest-first list.
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT id, body, device, created_at, bump_count
+			SELECT id, body, device, created_at, bump_count, seq
 			FROM clips
 			ORDER BY created_at DESC, id DESC
 			LIMIT ?`, limit)
@@ -496,7 +585,7 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 	out := []Clip{}
 	for rows.Next() {
 		var c Clip
-		if err := rows.Scan(&c.ID, &c.Body, &c.Device, &c.CreatedAt, &c.BumpCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.Body, &c.Device, &c.CreatedAt, &c.BumpCount, &c.Seq); err != nil {
 			return nil, fmt.Errorf("scan clip: %w", err)
 		}
 		out = append(out, c)
@@ -505,6 +594,59 @@ func (s *Store) List(ctx context.Context, limit int, q string) ([]Clip, error) {
 		return nil, fmt.Errorf("iterate clips: %w", err)
 	}
 	return out, nil
+}
+
+// After returns up to limit clips whose SEQ is greater than after, in seq
+// order — the change feed's read. seq only ever grows and is re-assigned on a
+// dedup bump, so a re-pushed body is delivered again, after the cursor.
+func (s *Store) After(ctx context.Context, after int64, limit int) ([]Clip, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, body, device, created_at, bump_count, seq
+		FROM clips
+		WHERE seq > ?
+		ORDER BY seq ASC
+		LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query clips after %d: %w", after, err)
+	}
+	defer rows.Close()
+	out := []Clip{}
+	for rows.Next() {
+		var c Clip
+		if err := rows.Scan(&c.ID, &c.Body, &c.Device, &c.CreatedAt, &c.BumpCount, &c.Seq); err != nil {
+			return nil, fmt.Errorf("scan clip: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate clips: %w", err)
+	}
+	return out, nil
+}
+
+// Head is the feed counter's current value: the largest seq ever assigned
+// (deleted rows included). Every feed answer carries it so a client whose
+// cursor is AHEAD of it (a restored backup, a fresh volume) can resync.
+func (s *Store) Head(ctx context.Context) (int64, error) {
+	var v int64
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM clip_seq WHERE id = 1`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("read the seq counter: %w", err)
+	}
+	return v, nil
+}
+
+// CountContaining counts clips whose body or device contains needle. Used ONLY
+// for this server's own token (see main's startup scan): the needle is a bound
+// parameter, never logged.
+func (s *Store) CountContaining(ctx context.Context, needle string) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM clips WHERE instr(body, ?) > 0 OR instr(device, ?) > 0`,
+		needle, needle).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count clips containing the token: %w", err)
+	}
+	return n, nil
 }
 
 // ErrNoSuchClip is returned by Delete for an id that is not in the store.

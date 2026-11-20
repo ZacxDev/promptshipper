@@ -1090,6 +1090,8 @@ func TestTheSchemaLedgerIsExactlyTheseObjects(t *testing.T) {
 	wantTables := map[string]bool{
 		"clips": true, "clips_fts": true, "clips_fts_config": true,
 		"clips_fts_data": true, "clips_fts_docsize": true, "clips_fts_idx": true,
+		// The change-feed counter (one row; see ensureSeq).
+		"clip_seq": true,
 	}
 	wantTriggers := map[string]bool{"clips_ai": true, "clips_ad": true, "clips_au": true}
 
