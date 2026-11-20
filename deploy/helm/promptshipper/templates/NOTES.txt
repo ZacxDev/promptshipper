@@ -1,0 +1,15 @@
+promptshipper {{ .Chart.AppVersion }} in namespace {{ .Release.Namespace }}.
+{{- if .Values.stt.enabled }}
+{{- $ctx := dict "root" $ "component" "stt" "c" .Values.stt }}
+
+stt:  http://{{ include "promptshipper.serviceName" $ctx }}.{{ .Release.Namespace }}.svc:{{ .Values.stt.service.port }}
+      GET /healthz answers 503 until the model has downloaded and loaded.
+{{- end }}
+{{- if .Values.clip.enabled }}
+{{- $ctx := dict "root" $ "component" "clip" "c" .Values.clip }}
+
+clip: http://{{ include "promptshipper.serviceName" $ctx }}.{{ .Release.Namespace }}.svc:{{ .Values.clip.service.port }}
+{{- end }}
+
+Neither service speaks TLS. Keep them on a private network, or put a
+TLS-terminating Ingress in front.

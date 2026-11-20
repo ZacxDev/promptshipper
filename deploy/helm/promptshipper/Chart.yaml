@@ -1,0 +1,23 @@
+apiVersion: v2
+name: promptshipper
+description: >-
+  Self-hosted speech-to-text (OpenAI-compatible) and a cross-device clipboard
+  for talking to your AI agents. One chart, two independently toggleable
+  components: stt and clip.
+type: application
+# The chart's own version. Bumped on every chart change; the OCI push in
+# .github/workflows/chart.yml publishes it from a `v*` tag.
+version: 0.1.0
+# The image tag both components default to. release.yml tags images with the
+# bare semver of the git tag (v0.1.0 -> 0.1.0), so this carries no `v`.
+appVersion: "0.1.0"
+annotations:
+  licenses: MIT
+home: https://github.com/ZacxDev/promptshipper
+sources:
+  - https://github.com/ZacxDev/promptshipper
+keywords:
+  - speech-to-text
+  - whisper
+  - clipboard
+  - self-hosted
