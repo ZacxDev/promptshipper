@@ -250,7 +250,7 @@ every device loses it, there is no trash and the service has no undo. So:
 ## Nix
 
 `desktop/snip/package.nix` is the package; promptshipper's root flake exposes
-it as `packages.<system>.snip` (and `apps.<system>.snip`), x86_64-linux only:
+it as `packages.<system>.snip` (`nix run` uses its `meta.mainProgram`), x86_64-linux only:
 
 ```sh
 nix build github:ZacxDev/promptshipper#snip    # or: nix run github:ZacxDev/promptshipper#snip -- --version

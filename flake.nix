@@ -30,25 +30,12 @@
           snip = pkgs.callPackage ./desktop/snip/package.nix { src = ./desktop/snip; };
           mcp = pkgs.callPackage ./server/mcp/package.nix {
             src = ./server/mcp;
-            version = "0-unstable-" + (self.shortRev or self.dirtyShortRev or "unknown");
+            rev = self.shortRev or self.dirtyShortRev or "unknown";
           };
         }
       );
-
-      apps = forAllSystems (
-        system: _: {
-          snip = {
-            type = "app";
-            program = nixpkgs.lib.getExe self.packages.${system}.snip;
-            meta.description = "hotkey -> fuzzy snippet picker -> paste";
-          };
-          mcp = {
-            type = "app";
-            program = nixpkgs.lib.getExe self.packages.${system}.mcp;
-            meta.description = "MCP server for the promptshipper clip store";
-          };
-        }
-      );
+      # No `apps` output: `nix run .#snip` / `.#mcp` fall back to these
+      # packages and run each one's meta.mainProgram.
 
       devShells = forAllSystems (
         _: pkgs: {

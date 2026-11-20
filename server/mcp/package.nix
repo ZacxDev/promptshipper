@@ -8,14 +8,19 @@
   buildGoModule,
   src,
   # main.go's buildVersion is "dev" in source and has no release line to read
-  # (unlike snip's version.go), so the flake passes its own revision. The
-  # binary's --version then names the commit it was built from.
-  version,
+  # (unlike snip's version.go), so the flake passes its own short revision and
+  # the binary's --version prints "0-unstable-<rev>", naming the commit it was
+  # built from.
+  rev,
 }:
 
 buildGoModule {
   pname = "promptshipper-mcp";
-  inherit version;
+  # 🔴 A CONSTANT, not the rev. buildGoModule names the vendored-modules
+  # fixed-output derivation "<pname>-<version>-go-modules"; a per-commit version
+  # would rename that FOD on every commit and re-fetch identical modules. The
+  # rev reaches the binary only through ldflags below.
+  version = "0-unstable";
 
   src = lib.cleanSource src;
 
@@ -34,7 +39,7 @@ buildGoModule {
   ldflags = [
     "-s"
     "-w"
-    "-X main.buildVersion=${version}"
+    "-X main.buildVersion=0-unstable-${rev}"
   ];
 
   # `go build` in this directory names the binary `mcp`; the README and every
