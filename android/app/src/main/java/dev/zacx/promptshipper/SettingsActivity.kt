@@ -40,6 +40,7 @@ class SettingsActivity : Activity() {
     private lateinit var statusLine: TextView
     private lateinit var remoteToggle: CheckBox
     private lateinit var feedToggle: CheckBox
+    private lateinit var pushToggle: CheckBox
     private lateinit var languageSpinner: Spinner
     private lateinit var historyUsage: TextView
     private lateinit var historyTransfer: TextView
@@ -124,6 +125,7 @@ class SettingsActivity : Activity() {
         clipUrlField = findViewById(R.id.clip_url)
         clipTokenField = findViewById(R.id.clip_token)
         feedToggle = findViewById(R.id.clip_feed_dictations)
+        pushToggle = findViewById(R.id.clip_agent_push)
 
         urlField.setText(settings.baseUrl)
         remoteToggle.isChecked = settings.remoteEnabled
@@ -131,6 +133,7 @@ class SettingsActivity : Activity() {
         renderTokenState()
         clipUrlField.setText(clipSettings.baseUrl)
         feedToggle.isChecked = clipSettings.feedDictations
+        pushToggle.isChecked = clipSettings.agentPush
         renderClipTokenState()
 
         findViewById<Button>(R.id.stt_save).setOnClickListener { save() }
@@ -348,8 +351,12 @@ class SettingsActivity : Activity() {
         ClipEndpoints.rejectionFor(clipUrlField.text.toString())
 
     private fun saveClip(): Boolean {
+        val before = clipSettings.baseUrl
         clipSettings.baseUrl = clipUrlField.text.toString()
+        // A different clip store: its feed cursor is meaningless here.
+        if (clipSettings.baseUrl != before) clipSettings.pushCursor = null
         clipSettings.feedDictations = feedToggle.isChecked
+        clipSettings.agentPush = pushToggle.isChecked
         val typed = clipTokenField.text.toString()
         if (typed.isNotBlank()) {
             try {

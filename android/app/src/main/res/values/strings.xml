@@ -820,4 +820,8 @@
     <string name="pairing_done">Paired with %1$s</string>
     <!-- DictationClipFeed: opt-in, default off. -->
     <string name="clip_feed_dictations_label">Send each dictation to my clip feed — every finished transcript is also queued to your clip server, where your agents can read it. Off: nothing about a dictation leaves the phone except the transcription upload.</string>
+    <!-- ClipPush: the agent push. -->
+    <string name="clip_agent_push_label">Let my agents push to my clipboard — while the bubble is on, text your agents send (through the MCP server) is copied to this phone\'s clipboard. Nothing else from the clip server is copied.</string>
+    <string name="clip_push_label">From your agent</string>
+    <string name="clip_push_copied">From your agent — copied to the clipboard</string>
 </resources>

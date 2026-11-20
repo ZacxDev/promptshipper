@@ -536,6 +536,8 @@ class BubbleService : Service() {
         // built up off-mesh to be drainable, and the service is restarted on
         // every boot and every upgrade.
         scheduleClipFlush(0L)
+        // The agent push ([ClipPush]): long-polls only while this service runs.
+        startClipPush()
     }
 
     // --- the window ---------------------------------------------------------
@@ -918,6 +920,10 @@ class BubbleService : Service() {
     }
 
     override fun onDestroy() {
+        // First: a long-poll that returns after this must copy nothing to the
+        // clipboard (ClipPushListener.stop's contract).
+        main.removeCallbacks(clipPushIdleStop)
+        clipPush?.stop()
         OverlayVisibility.unregister(visibilitySink)
         // 🔴 Paired with the register in `onCreate`. [ClipOutboxHealth] is a
         // process-wide object and the picker's flush-on-open records into it
@@ -1767,6 +1773,10 @@ class BubbleService : Service() {
                     // the user's capture, not a cached fact, so there is no
                     // `forget()` equivalent here and there must not be one.
                     main.removeCallbacks(clipFlushTick)
+                    // The agent push keeps listening for a grace period (a
+                    // phone glanced at and put down), then stops.
+                    main.removeCallbacks(clipPushIdleStop)
+                    main.postDelayed(clipPushIdleStop, ClipPushListener.SCREEN_OFF_GRACE_MS)
                 }
                 // Not "resume the chain": probe now. The screen coming back on
                 // is the moment before the user's next tap.
@@ -1778,6 +1788,8 @@ class BubbleService : Service() {
                 Intent.ACTION_SCREEN_ON -> {
                     scheduleProbe(0L)
                     scheduleClipFlush(0L)
+                    main.removeCallbacks(clipPushIdleStop)
+                    startClipPush()
                 }
             }
         }
@@ -1791,6 +1803,54 @@ class BubbleService : Service() {
      * — [healthProbe]'s reason exactly, and with the same shape.
      */
     internal var clipFlush: (() -> Unit)? = null
+
+    // --- the agent push ([ClipPush]) ------------------------------------------
+
+    /** A seam: `null` means [defaultClipPush]. */
+    internal var clipPushFactory: (() -> ClipPushListener)? = null
+    internal var clipPush: ClipPushListener? = null
+        private set
+
+    private val clipPushIdleStop = Runnable { clipPush?.stop() }
+
+    private fun startClipPush() {
+        val listener = clipPush
+            ?: (clipPushFactory?.invoke() ?: defaultClipPush()).also { clipPush = it }
+        listener.start()
+    }
+
+    /**
+     * "Let my agents push to my clipboard": long-polls the clip server's feed
+     * while this service runs, and copies ONLY `device == "mcp"` clips.
+     */
+    private fun defaultClipPush(): ClipPushListener {
+        val settings = ClipSettings.create(this)
+        return ClipPushListener(
+            enabled = { settings.agentPush && settings.isConfigured },
+            poll = { after, wait, limit ->
+                val base = settings.baseUrl
+                val token = settings.tokens.token()
+                if (base == null || token == null) {
+                    ClipPush.Poll.Failed("not paired")
+                } else {
+                    ClipHttp(base, token).feed(after, wait, limit)
+                }
+            },
+            loadCursor = { settings.pushCursor },
+            saveCursor = { settings.pushCursor = it },
+            copy = { body -> main.post { copyFromAgent(body) } },
+        )
+    }
+
+    private fun copyFromAgent(body: String) {
+        val cm = getSystemService(android.content.ClipboardManager::class.java) ?: return
+        cm.setPrimaryClip(
+            android.content.ClipData.newPlainText(getString(R.string.clip_push_label), body)
+        )
+        android.widget.Toast.makeText(
+            this, R.string.clip_push_copied, android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
 
     /** Where [clipFlush] runs. `null` means [worker]. */
     internal var clipFlushExecutor: java.util.concurrent.Executor? = null

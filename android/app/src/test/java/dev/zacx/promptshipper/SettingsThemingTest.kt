@@ -136,6 +136,8 @@ class SettingsThemingTest {
         // bare for stt_remote_enabled's stated reason. The ledger GREW
         // deliberately.
         "clip_feed_dictations" to null,
+        // The agent push toggle (ClipPush). Bare, likewise. GREW deliberately.
+        "clip_agent_push" to null,
     )
 
     /**
@@ -340,11 +342,12 @@ class SettingsThemingTest {
         // outlined, non-destructive, text-bearing — they join the count.
         // 🔴 RE-DERIVED at 12 by @id/clip_feed_dictations, the second
         // checkbox (the opt-in dictation feed): text-bearing, so it joins.
+        // 🔴 RE-DERIVED at 13 by @id/clip_agent_push, the third checkbox.
         assertEquals(
-            "expected to examine both checkboxes, all FOUR fields and all SIX " +
+            "expected to examine all THREE checkboxes, all FOUR fields and all SIX " +
                 "outlined buttons (STT Save, Test, Export history, Import " +
                 "history, Import snippets, clipboard Save); examined $examined",
-            12,
+            13,
             examined.size
         )
     }

@@ -610,6 +610,18 @@
                 android:textSize="15sp"
                 android:textColor="@color/dicta_on_surface"
                 android:text="@string/clip_feed_dictations_label" />
+
+            <!-- Default ON; acts only on clips posted as device "mcp". See ClipPush. -->
+            <CheckBox
+                android:id="@+id/clip_agent_push"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:minHeight="48dp"
+                android:gravity="center_vertical"
+                android:textSize="15sp"
+                android:textColor="@color/dicta_on_surface"
+                android:text="@string/clip_agent_push_label" />
         </LinearLayout>
 
         <!--

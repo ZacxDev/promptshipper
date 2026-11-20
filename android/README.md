@@ -78,6 +78,36 @@ and turns off redirect following so a private host cannot bounce a request —
 bearer token included — to a public `http://` URL. `NetworkManifestTest` fails if
 any other file opens a connection.
 
+## Your agents and the clip server
+
+Two settings in **Settings → Shared clipboard** connect the phone to agents
+that use the clip server (for example through the MCP server):
+
+- **Send each dictation to my clip feed**: **off by default**, and offered
+  unchecked on the pairing screen. When it is on, each finished transcript is
+  also queued to the clip server (device `phone-dictation`) through the same
+  outbox as a share-sheet capture, with the same retry and backoff. When it is
+  off, nothing about a dictation leaves the phone except the transcription
+  upload.
+- **Let my agents push to my clipboard**: **on by default** once paired. While
+  the bubble is on, the app long-polls the clip server's change feed
+  (`GET /v1/clips?after=<seq>&wait=50`, see `server/clip/README.md`). Every
+  clip posted with device **`mcp`** is copied to the clipboard and shows a
+  short "From your agent" notice. Clips from any other device are never
+  copied.
+  - The cursor (the largest `seq` seen) is persisted.
+  - On the first poll, the app starts at the server's `head`, so existing
+    history is never copied.
+  - A cursor ahead of `head` (the store was restored from an older backup) is
+    reset to `head` without copying.
+  - Pairing again, or changing the clip URL, resets the cursor.
+  - Failures back off from 2 s, doubling, up to 5 min. A `429` waits for its
+    `Retry-After`.
+  - Polling stops when the bubble stops, or five minutes after the screen
+    goes off. It resumes when the screen comes back on. No wake lock is held.
+  - Turning the setting off takes effect at the next poll. Turning it back on
+    takes effect the next time the screen comes on or the bubble starts.
+
 ## History import from dicta
 
 Settings → **Import history from a file** reads the archive format in

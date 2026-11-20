@@ -245,6 +245,40 @@ class ClipHttp(
         }
     }
 
+    /**
+     * One change-feed poll (`GET /v1/clips?after=&wait=&limit=`) for
+     * [ClipPush]. Never throws. The read timeout outlasts the hold by 15 s.
+     */
+    fun feed(after: Long, waitSeconds: Int, limit: Int): ClipPush.Poll {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = opener(
+                ClipEndpoints.clips(baseUrl) + "?after=$after&wait=$waitSeconds&limit=$limit"
+            ).apply {
+                requestMethod = "GET"
+                connectTimeout = SttRetryPolicy.CONNECT_TIMEOUT_MS
+                readTimeout = (waitSeconds + 15) * 1000
+                setRequestProperty("Authorization", SttEndpoints.authorization(token))
+                setRequestProperty("Accept", "application/json")
+            }
+            val status = conn.responseCode
+            when {
+                status == 200 -> ClipPush.parse(bodyOf(conn, ok = true))
+                status == 429 || status == 503 -> {
+                    val s = conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 5L
+                    ClipPush.Poll.RetryAfter(s * 1000L)
+                }
+                else -> ClipPush.Poll.Failed("HTTP $status")
+            }
+        } catch (e: IOException) {
+            ClipPush.Poll.Failed(e.message ?: e.javaClass.simpleName)
+        } catch (e: RuntimeException) {
+            ClipPush.Poll.Failed(e.message ?: e.javaClass.simpleName)
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
     override fun delete(id: Long): Boolean {
         var conn: HttpURLConnection? = null
         return try {

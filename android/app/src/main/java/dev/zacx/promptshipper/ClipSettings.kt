@@ -86,6 +86,30 @@ class ClipSettings(
      * Read by [DictationClipFeed]; set from Settings and from the pairing
      * confirm screen, where it is offered unchecked.
      */
+    /**
+     * "Let my agents push to my clipboard" ([ClipPush]). Default ON: it only
+     * ever acts on clips whose device is `mcp`, and only once paired.
+     */
+    var agentPush: Boolean
+        get() = prefs.getBoolean(KEY_AGENT_PUSH, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AGENT_PUSH, value).apply()
+        }
+
+    /**
+     * The change-feed cursor: the largest `seq` seen, or null before the first
+     * poll. Persisted so a restart neither re-copies nor skips. Cleared when the
+     * clip server changes (a new pairing), because a cursor means nothing
+     * against a different store.
+     */
+    var pushCursor: Long?
+        get() = prefs.getLong(KEY_PUSH_CURSOR, -1L).takeIf { it >= 0L }
+        set(value) {
+            val e = prefs.edit()
+            if (value == null) e.remove(KEY_PUSH_CURSOR) else e.putLong(KEY_PUSH_CURSOR, value)
+            e.commit()
+        }
+
     var feedDictations: Boolean
         get() = prefs.getBoolean(KEY_FEED_DICTATIONS, false)
         set(value) {
@@ -105,6 +129,8 @@ class ClipSettings(
         const val KEY_BASE_URL: String = "clip_base_url"
 
         const val KEY_FEED_DICTATIONS: String = "clip_feed_dictations"
+        const val KEY_AGENT_PUSH: String = "clip_agent_push"
+        const val KEY_PUSH_CURSOR: String = "clip_push_cursor"
 
         /**
          * 🔴 Distinct from [TokenStore.KEY_TOKEN_CIPHERTEXT] — see the class
