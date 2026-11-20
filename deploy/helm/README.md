@@ -39,6 +39,14 @@ kubectl -n promptshipper create secret generic promptshipper-tokens \
 key, so a missing key leaves the pod in `CreateContainerConfigError` rather than
 starting without a token. Only `stt.auth.tokensKey` is optional.
 
+With `stt.enabled`, the clip pod also reads the STT Secret's `stt.auth.tokenKey`
+(as `CLIPSTORE_REFUSE_TOKENS`, `optional: true`) so it refuses to store a clip
+containing the STT token — see `server/clip/README.md`. It is a `secretKeyRef`
+only; the value never appears outside the Secret. Changing the STT token
+therefore means restarting **both** components. Because the chart owns that
+variable, a render with `clip.extraEnv` naming `CLIPSTORE_REFUSE_TOKENS` while
+`stt.enabled` **fails** rather than letting a duplicate silently replace it.
+
 `<component>.auth.token` (at least 24 bytes) puts an inline token into a
 chart-managed Secret instead. That writes it into your values and Helm release
 history, so prefer `existingSecret`.

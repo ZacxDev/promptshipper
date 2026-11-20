@@ -131,6 +131,48 @@ def test_existing_secret_renders_no_secret_and_uses_its_name_and_keys():
         assert "checksum/auth" not in ann
 
 
+def test_clip_refuses_the_stt_token_read_from_the_stt_secret():
+    # clip must refuse to STORE the STT token (server/clip/README.md), so it is
+    # handed that token — by secretKeyRef to the STT Secret, never by value.
+    docs = render(*inline_tokens())
+    ref = env(docs, "clip")["CLIPSTORE_REFUSE_TOKENS"]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": one(docs, "Secret", "stt")["metadata"]["name"], "key": "STT_API_TOKEN", "optional": True}
+    # An existing STT Secret and a non-default key are followed, not assumed.
+    ref = env(render(*existing_secrets()), "clip")["CLIPSTORE_REFUSE_TOKENS"]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": "legacy-stt-secret", "key": "token", "optional": True}
+
+
+def test_extra_env_cannot_shadow_the_chart_managed_refuse_tokens():
+    # With stt.enabled the chart sets CLIPSTORE_REFUSE_TOKENS itself. A second
+    # entry of the same name from clip.extraEnv would be a duplicate env name,
+    # and Kubernetes keeps the LAST one — silently dropping the STT-token
+    # refusal. The chart must refuse to render instead.
+    err = render(
+        *inline_tokens(),
+        "clip.extraEnv[0].name=CLIPSTORE_REFUSE_TOKENS",
+        "clip.extraEnv[0].value=some-other-token-cccccccccccccccc",
+        expect_fail=True,
+    )
+    assert "clip.extraEnv must not set CLIPSTORE_REFUSE_TOKENS while stt.enabled" in err
+    # Running clip alone, extraEnv IS the documented way to set it.
+    docs = render(
+        "stt.enabled=false",
+        f"clip.auth.token={TOKEN_CLIP}",
+        "clip.extraEnv[0].name=CLIPSTORE_REFUSE_TOKENS",
+        "clip.extraEnv[0].value=some-other-token-cccccccccccccccc",
+    )
+    assert env(docs, "clip")["CLIPSTORE_REFUSE_TOKENS"]["value"] == "some-other-token-cccccccccccccccc"
+    # An unrelated extraEnv entry still renders alongside the chart's own.
+    docs = render(*inline_tokens(), "clip.extraEnv[0].name=OTHER_VAR", "clip.extraEnv[0].value=x")
+    names = [e["name"] for e in container(docs, "clip")["env"]]
+    assert names.count("CLIPSTORE_REFUSE_TOKENS") == 1 and "OTHER_VAR" in names
+
+
+def test_clip_alone_renders_without_a_reference_to_an_stt_secret():
+    docs = render("stt.enabled=false", f"clip.auth.token={TOKEN_CLIP}")
+    assert "CLIPSTORE_REFUSE_TOKENS" not in env(docs, "clip")
+
+
 def test_existing_secret_wins_over_an_inline_token_for_both_components():
     docs = render(*inline_tokens(), *existing_secrets())
     assert of_kind(docs, "Secret") == []

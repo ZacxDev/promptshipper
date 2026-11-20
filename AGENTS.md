@@ -130,7 +130,8 @@ fine on a private network and **not** fine on the internet.
 
 `--bind` decides which host address Docker publishes on; `--host` decides the
 address in the QR code. By default the bind is the `--host` address **only if it
-is private** (RFC 1918, Tailscale/CGNAT `100.64.0.0/10`, IPv6 ULA, loopback);
+is private** (RFC 1918, Tailscale/CGNAT `100.64.0.0/10`, IPv6 `fd00::/8`,
+loopback — the same set the app allows plain HTTP to, see `docs/pairing.md`);
 setup **never** picks `0.0.0.0` on its own, and refuses a public address unless
 `--bind` is passed explicitly (`--bind 0.0.0.0` works, with a loud warning). A
 bind you set yourself — by `--bind` or by editing `BIND=` in `.env` — is kept on

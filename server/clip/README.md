@@ -139,11 +139,14 @@ suspended, with no reconnection protocol to get right.
 
 #### The auto-copy contract (for a feed-aware app)
 
-No app listens to this feed yet. The Android app **will** poll it while its
-bubble service runs, and a feed-aware app **will auto-copy to the system
-clipboard ONLY clips whose `device` is exactly `mcp`** — text an agent pushed
-via the MCP server. Every other clip (captured on a phone, a laptop, by snip)
-will be listed but never copied unasked. So:
+The Android app consumes this feed: while its bubble service is in the
+foreground and its agent-push setting is on (the default), it long-polls
+`GET /v1/clips?after=…&wait=…` (`ClipPushListener` / `ClipPush.kt`) and
+**auto-copies to the system clipboard ONLY clips whose `device` is exactly
+`mcp`** — text an agent pushed via the MCP server. Every other clip (captured on
+a phone, a laptop, by snip) is listed but never copied unasked. On its first
+start it begins at `head` and copies nothing; after a gap it copies only the
+newest `mcp` clip of the backlog. So:
 
 * the MCP server (and anything else meant to land on the phone's clipboard)
   POSTs with `"device":"mcp"`;
@@ -151,27 +154,44 @@ will be listed but never copied unasked. So:
 * the server does not enforce either rule — `device` is a free string — so the
   contract lives with the clients and this paragraph.
 
-### The server never stores its own token
+### The server never stores a server token
 
 A clip whose `body` or `device` contains this server's own bearer token
-(`CLIPSTORE_TOKEN`) is refused with **`422 contains_server_token`** — "the
-clip looked like this server's own access token and was not stored". It is not
-stored, the body is never echoed, and the log line names neither. Reason: a
+(`CLIPSTORE_TOKEN`), or any credential listed in `CLIPSTORE_REFUSE_TOKENS`, is
+refused with **`422 contains_server_token`** — "the clip looked like a server
+access token and was not stored". It is not stored, the body is never echoed,
+and neither the answer nor the log line says which token matched. Reason: a
 token copied on the phone and captured as a clip would otherwise be readable
 back out by anything that can read clips (e.g. an agent via the MCP server).
 Any other value, including other 64-hex strings, is stored as usual.
 
-At startup the server counts stored clips that contain its token (rows saved
-before this guard existed) and, if there are any, logs **only the count** and
-the fix: **rotate the token** with `./setup --rotate`, then re-pair your
-devices. Deleting those clips is not the fix — a token that sat in a readable
-clip may already have been read, and only rotation retires it. (After rotation
-the old value is no longer a credential; delete the clips with
+`CLIPSTORE_REFUSE_TOKENS` is how the clip server learns the **STT server's
+token**, which the same phone holds. The compose stack sets it to
+`STT_API_TOKEN` from `.env` (so `./setup` covers it with no extra step), and the
+Helm chart, when `stt.enabled`, sets it by `secretKeyRef` to the STT Secret's
+`stt.auth.tokenKey` (`optional: true`; the value never appears outside the
+Secret). Running clip alone, set it yourself (e.g. `clip.extraEnv` with a
+`secretKeyRef`).
+
+At startup the server counts stored clips that contain its token, and each
+`CLIPSTORE_REFUSE_TOKENS` entry (rows saved before this guard existed) and, if
+there are any, logs **only the count** (per entry by position, never the value)
+and the fix: **rotate the token** with `./setup --rotate` (it rotates both), then
+re-pair your devices. Deleting those clips is not the fix — a token that sat in
+a readable clip may already have been read, and only rotation retires it.
+(After rotation the old value is no longer a credential; delete the clips with
 `DELETE /v1/clips/{id}` if you want them gone.)
 
-⚠ **Known limitation:** the clip server only knows its OWN token. The STT
-server's token is not checked, so a copied STT token would be stored like any
-other text.
+⚠ **Not covered:** the STT server's *extra* named tokens (`STT_API_TOKENS`).
+The chart and compose pass only `STT_API_TOKEN`. With compose (or clip running
+alone), add the others to `CLIPSTORE_REFUSE_TOKENS` by hand as one
+comma-separated list of raw values — the main token included, since the
+variable is replaced, not appended to. With the Helm chart and `stt.enabled`
+there is **no** supported way to add them: the chart sets
+`CLIPSTORE_REFUSE_TOKENS` itself, and it **refuses to render** if
+`clip.extraEnv` also names it (a duplicate env name would make Kubernetes keep
+the last entry and silently drop the STT-token refusal). Under Helm, extra STT
+tokens stay uncovered.
 
 ### Fails loud, never empty
 
@@ -236,6 +256,7 @@ store: SQLite serves `count(*)` from its page cache (measured against
 | | |
 |---|---|
 | `$CLIPSTORE_TOKEN` | the bearer token. **Required**, minimum 24 bytes; a shorter or absent one is `exit 2` at startup, never a default and never an open listener. `./setup` generates one into `deploy/compose/.env`. |
+| `$CLIPSTORE_REFUSE_TOKENS` | optional, comma-separated: other credentials a clip must not contain (default install: the STT token — see *The server never stores a server token*). An entry shorter than 24 bytes is **not** checked and is reported at startup by position and length; a short needle would refuse ordinary clips, and another service's misconfiguration must not stop this one starting. |
 | `-addr` | default `:8139` |
 | `-db` | default `/data/clipstore.db` |
 

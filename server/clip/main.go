@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -50,6 +51,39 @@ const writeTimeout = (MaxWaitSeconds + 30) * time.Second
 // tokenEnv is the only way the bearer token is supplied. There is no flag for
 // it: a flag value is visible in the pod's argv and in `kubectl describe`.
 const tokenEnv = "CLIPSTORE_TOKEN"
+
+// refuseEnv names OTHER credentials this server must also refuse to store —
+// in a default install, the STT server's token, which the same phone holds and
+// can copy just as easily. Optional; see refusedTokens.
+const refuseEnv = "CLIPSTORE_REFUSE_TOKENS"
+
+// refusedTokens parses CLIPSTORE_REFUSE_TOKENS: comma-separated, surrounding
+// whitespace trimmed, empty entries ignored (so an unset or blank variable —
+// compose's `${STT_API_TOKEN:-}` with no STT token — means "none").
+//
+// An entry shorter than MinTokenBytes is NOT used, and that is said on warn
+// (by position and length — never the value). Two reasons it is skipped rather
+// than fatal: (1) a short needle would refuse every clip that merely contains
+// it ("abc"), turning a guard into an outage; (2) the entry belongs to ANOTHER
+// service, whose misconfiguration must not stop this one from starting.
+// TestRefusedTokensParsing pins both halves.
+func refusedTokens(raw string, warn io.Writer) []string {
+	var out []string
+	for i, part := range strings.Split(raw, ",") {
+		t := strings.TrimSpace(part)
+		if t == "" {
+			continue
+		}
+		if len(t) < MinTokenBytes {
+			fmt.Fprintf(warn, "clipstore: WARNING: %s entry %d is %d bytes, under the %d-byte floor; "+
+				"it is NOT checked (a short value would refuse ordinary clips).\n",
+				refuseEnv, i+1, len(t), MinTokenBytes)
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
 
 // buildVersion is stamped by the Dockerfile's `-ldflags -X main.buildVersion`.
 // It is logged at startup so a pod's log answers "which artifact is this" —
@@ -127,6 +161,24 @@ func reportTokenClips(ctx context.Context, s tokenScanner, token string, out io.
 	}
 }
 
+// reportRefusedTokenClips is reportTokenClips for the CLIPSTORE_REFUSE_TOKENS
+// entries: a count per entry, by POSITION, never the value or the clips.
+func reportRefusedTokenClips(ctx context.Context, s tokenScanner, extra []string, out io.Writer) {
+	for i, tok := range extra {
+		n, err := s.CountContaining(ctx, tok)
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "clipstore: WARNING: could not scan stored clips for %s entry %d: %v\n",
+				refuseEnv, i+1, err)
+		case n > 0:
+			fmt.Fprintf(out, "clipstore: WARNING: %d stored clip(s) contain the credential in %s entry %d. "+
+				"Anything that can read clips may already have read it: rotate it "+
+				"(./setup --rotate rotates the STT token too; then re-pair your devices).\n",
+				n, refuseEnv, i+1)
+		}
+	}
+}
+
 func main() {
 	addr := flag.String("addr", ":8139",
 		"listen address. 8139 is the port the container image exposes.")
@@ -149,8 +201,10 @@ func main() {
 	defer store.Close()
 
 	reportTokenClips(context.Background(), store, token, os.Stderr)
+	extra := refusedTokens(os.Getenv(refuseEnv), os.Stderr)
+	reportRefusedTokenClips(context.Background(), store, extra, os.Stderr)
 
-	api := NewAPI(store, token, time.Now)
+	api := NewAPI(store, token, time.Now, extra...)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           api.Handler(),
