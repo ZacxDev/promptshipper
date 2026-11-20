@@ -74,11 +74,25 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      # Evaluates every output (today: the dev shell and formatter; the
-      # desktop packages once they land) and builds any `checks`. The server
-      # suites run in ci.yml, not here.
+      # Evaluates every output and builds any `checks`. It does NOT build
+      # `packages` — the next step does. The server suites run in ci.yml.
       - name: nix flake check
         run: nix flake check -L --show-trace
+      # 🔴 The desktop packages are BUILT and RUN here, not just evaluated.
+      # snip's --version must equal version.go's line (package.nix reads it);
+      # mcp's must carry the flake revision, so an unstamped "dev" fails.
+      - name: the desktop packages build and run
+        run: |
+          nix build -L .#snip .#mcp
+          want=$(sed -n 's/^var buildVersion = "\([^"]*\)".*/\1/p' desktop/snip/cmd/snip/version.go)
+          got=$(nix run .#snip -- --version)
+          echo "snip --version: $got (want $want)"
+          test -n "$want"
+          test "$got" = "$want"
+          got=$(nix run .#mcp -- --version)
+          echo "promptshipper-mcp --version: $got"
+          printf '%s\n' "$got" | grep -Eq '^0-unstable-[0-9a-f]{7}'
+          nix run .#mcp -- -help 2>&1 | grep -q -- '-pairing'
       - name: the dev shell builds and carries its tools
         run: nix develop --command bash -c 'go version && helm version --short && kubeconform -v && python -c "import fastapi, yaml"'
 

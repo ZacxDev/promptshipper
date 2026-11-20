@@ -16,14 +16,39 @@
       forAllSystems = f: lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
-      # ── desktop packages go here ─────────────────────────────────────────
-      # TODO(desktop/snip): `packages.<system>.snip`  — lands with PR #3/#4.
-      # TODO(server/mcp):   `packages.<system>.mcp`   — lands with PR #3/#4.
+      # ── desktop packages ─────────────────────────────────────────────────
+      # snip (desktop/snip/package.nix) and the MCP server
+      # (server/mcp/package.nix). CI builds both and runs them (chart.yml,
+      # `flake`); `nix flake check` alone only evaluates packages.
       # TODO(home-manager): `homeManagerModules.default` (snip + mcp on the
-      #                     desktop), next to `packages`, once both exist.
+      #                     desktop), next to `packages`.
       # Do not add server packages or NixOS server modules here (decided
       # 2026-11-20): compose and the chart are the server install paths.
       # ─────────────────────────────────────────────────────────────────────
+      packages = forAllSystems (
+        _: pkgs: {
+          snip = pkgs.callPackage ./desktop/snip/package.nix { src = ./desktop/snip; };
+          mcp = pkgs.callPackage ./server/mcp/package.nix {
+            src = ./server/mcp;
+            version = "0-unstable-" + (self.shortRev or self.dirtyShortRev or "unknown");
+          };
+        }
+      );
+
+      apps = forAllSystems (
+        system: _: {
+          snip = {
+            type = "app";
+            program = nixpkgs.lib.getExe self.packages.${system}.snip;
+            meta.description = "hotkey -> fuzzy snippet picker -> paste";
+          };
+          mcp = {
+            type = "app";
+            program = nixpkgs.lib.getExe self.packages.${system}.mcp;
+            meta.description = "MCP server for the promptshipper clip store";
+          };
+        }
+      );
 
       devShells = forAllSystems (
         _: pkgs: {
