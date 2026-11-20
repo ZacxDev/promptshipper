@@ -25,6 +25,7 @@ endpoint and nothing else; see "`/healthz` is unauthenticated" below. Errors are
 |---|---|
 | `POST /v1/clips` | `{"body":…,"device":…}` → `201` with the clip, or `200` with `"deduped":true` when an identical body already existed and was bumped to the front |
 | `GET /v1/clips?limit=N&q=…` | `{"clips":[…],"limit":N,"query":"…"}`, newest first |
+| `GET /v1/clips?after=SEQ&wait=S&limit=N` | **the change feed**: `{"clips":[…],"limit":N,"head":H}`, clips with `seq > SEQ`, **in `seq` order**; see *Change feed* |
 | `DELETE /v1/clips/{id}` | `204`, or `404 no_such_clip` |
 | `GET /healthz` | `{"status":"ok"}`, or `503 store_unreadable`. **Probe-only, and the one route that needs no token.** Still reads a row. |
 
@@ -82,6 +83,95 @@ Changed from the first cut of this service, which was prefix-only (`q=assw` did
 next start: `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot alter an existing table,
 so `OpenStore` reads the stored DDL and drops and rebuilds the index when it is
 not trigram. The index holds no bodies, so a rebuild loses nothing.
+
+### Change feed (long-poll)
+
+`GET /v1/clips?after=<seq>&wait=<seconds>` is how a device learns about new
+clips without hammering the list:
+
+* Every clip carries **`seq`**: a counter that only ever grows. It is set when
+  a clip is created **and again every time an identical body is re-POSTed**
+  (a dedup bump), and a deleted row's `seq` is never reused.
+* The feed returns every clip with `seq > after`, **in `seq` order** (oldest
+  change first), up to `limit` (default 100, max 500) — **as soon as at least
+  one exists**. A re-pushed body is therefore delivered again, after the
+  cursor, even though its `id` is unchanged.
+* With `wait` (0–60 s, default 0) and nothing new, the request is held open
+  and answers the moment a clip is POSTed (created or bumped), or
+  `{"clips":[]}` when `wait` expires. Never `null`.
+* **The cursor is the largest `seq` you have seen** — poll with
+  `after=<last seq>`. Start with `after=0`. To skip history, read the feed with
+  `wait=0` until it returns fewer than `limit` rows and keep its largest `seq`.
+  Never use `id` as the cursor.
+* **Every feed answer carries `head`**: the counter's current value, i.e. the
+  largest `seq` ever assigned (deleted rows included), even when `clips` is
+  empty. **Contract: if your cursor is greater than `head`, reset it to
+  `head` and treat that as a resync** — the store was restored from an older
+  backup or replaced by a fresh volume, so clips you already hold may be gone
+  and later clips will reuse lower numbers. A request with `after > head`
+  answers at once, whatever `wait` says, so it never waits forever.
+* **Deletes are not in the feed.** A deleted clip simply stops existing; no
+  event is sent for it.
+* ⚠ **Downgrade note:** a previous binary (from before `seq`) can run against
+  a migrated database, but every clip it writes gets `seq = 0`, which the
+  feed never delivers. Upgrading again does not renumber them; they stay
+  visible in the newest-first list. (The `seq` index is deliberately not
+  UNIQUE, so such rows never break later POSTs.)
+* `seq` is not the list order: `GET /v1/clips` without `after` is still the
+  newest-first list by `created_at`, unchanged.
+* A database created before `seq` existed is migrated on start: existing rows
+  get `seq = id` (so a cursor taken from the old id-based feed keeps its
+  place), and new values start above every id ever issued.
+* `after` cannot be combined with `q` (`400 invalid_feed`); `wait` without
+  `after`, or outside 0–60, is `400 invalid_wait`; a negative or non-numeric
+  `after` is `400 invalid_after`.
+* At most 64 requests wait at once; one more gets **`429 too_many_waiters`**
+  with `Retry-After: 5`, immediately. A non-waiting read (`wait=0`) is never
+  refused.
+* Bearer-gated like every clip route. A waiter holds no database connection
+  while it waits (one short `SELECT` per wake-up), so it cannot block writes
+  on the single SQLite writer. The server's write deadline (90 s) outlasts the
+  longest wait, and shutdown releases every waiter with an empty answer.
+
+Long-poll rather than SSE: one ordinary request/response per poll survives
+flaky mobile networks, proxies and an Android foreground service being
+suspended, with no reconnection protocol to get right.
+
+#### The auto-copy contract (for a feed-aware app)
+
+No app listens to this feed yet. The Android app **will** poll it while its
+bubble service runs, and a feed-aware app **will auto-copy to the system
+clipboard ONLY clips whose `device` is exactly `mcp`** — text an agent pushed
+via the MCP server. Every other clip (captured on a phone, a laptop, by snip)
+will be listed but never copied unasked. So:
+
+* the MCP server (and anything else meant to land on the phone's clipboard)
+  POSTs with `"device":"mcp"`;
+* nothing else may use `mcp` as its device name;
+* the server does not enforce either rule — `device` is a free string — so the
+  contract lives with the clients and this paragraph.
+
+### The server never stores its own token
+
+A clip whose `body` or `device` contains this server's own bearer token
+(`CLIPSTORE_TOKEN`) is refused with **`422 contains_server_token`** — "the
+clip looked like this server's own access token and was not stored". It is not
+stored, the body is never echoed, and the log line names neither. Reason: a
+token copied on the phone and captured as a clip would otherwise be readable
+back out by anything that can read clips (e.g. an agent via the MCP server).
+Any other value, including other 64-hex strings, is stored as usual.
+
+At startup the server counts stored clips that contain its token (rows saved
+before this guard existed) and, if there are any, logs **only the count** and
+the fix: **rotate the token** with `./setup --rotate`, then re-pair your
+devices. Deleting those clips is not the fix — a token that sat in a readable
+clip may already have been read, and only rotation retires it. (After rotation
+the old value is no longer a credential; delete the clips with
+`DELETE /v1/clips/{id}` if you want them gone.)
+
+⚠ **Known limitation:** the clip server only knows its OWN token. The STT
+server's token is not checked, so a copied STT token would be stored like any
+other text.
 
 ### Fails loud, never empty
 
@@ -157,7 +247,7 @@ store: SQLite serves `count(*)` from its page cache (measured against
 * **No labels or categories.** This is a clipboard. The labelled store is the
   snippet catalog served by the STT server.
 * **No TLS and no public exposure.** See *Shape*.
-* **No server→phone push.**
+* **No server→phone push channel** beyond the long-poll change feed above.
 
 ## Local loop
 

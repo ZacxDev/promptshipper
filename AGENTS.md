@@ -68,6 +68,16 @@ app pairs with them by scanning a QR code that `./setup` prints
    nothing else. If the user cannot open an image (remote shell), they can run
    `./setup --pairing` in *their own* terminal to see the code as text.
 
+   **Pairing a desktop tool or an agent** (snip, the MCP server) is a different,
+   clip-only code — it carries no STT token:
+
+   ```sh
+   ./setup --pairing --for desktop --qr-png ~/promptshipper-desktop.png
+   ```
+
+   Use `--for desktop` for every desktop/agent install; never hand a desktop
+   tool the phone's code. The same "do not read or repeat it" rule applies.
+
 5. **Report** what you ran, the two server URLs (no tokens), and the result of
    the verification below.
 
