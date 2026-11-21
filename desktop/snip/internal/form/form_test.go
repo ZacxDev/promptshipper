@@ -122,11 +122,31 @@ func TestApplyMultiselectEmptyIsLegal(t *testing.T) {
 	}
 }
 
-// A typed value containing the literal text {{clip}} must stay literal — clip is
-// resolved FIRST (before Apply), so the text the operator typed into the form is
-// what gets substituted. The test feeds a value that looks like a clip variable
-// and asserts it is NOT re-expanded by Apply.
-func TestClipInsideValueStaysLiteral(t *testing.T) {
+// 🔴 Apply's OWN final pass refuses a declared placeholder that is still
+// present after substitution — reachable when a value reintroduces the very
+// placeholder being replaced. This is the guarantee that makes a SECOND check in
+// the paste helper unreachable (and why that duplicate was deleted).
+func TestApplyRefusesAnUnresolvedPlaceholderAfterSubstitution(t *testing.T) {
+	inputs := []artifact.Input{{Name: "a", Type: "text", Required: mustBool(true)}}
+	if _, err := Apply("{{a}}", inputs, map[string]string{"a": "{{a}}"}); err == nil {
+		t.Fatal("Apply must refuse a body that still carries a declared placeholder after substitution")
+	}
+	// POSITIVE CONTROL: the same call with a literal value substitutes cleanly,
+	// so the refusal above is about the unresolved placeholder and not about
+	// Apply refusing everything.
+	if got, err := Apply("{{a}}", inputs, map[string]string{"a": "X"}); err != nil || got != "X" {
+		t.Fatalf("control Apply = %q, %v — it proves nothing", got, err)
+	}
+}
+
+// Apply substitutes the value VERBATIM — including the literal text {{clip}}.
+// ⚠ WHAT THIS DOES **NOT** PROVE, deliberately: it is NOT an ordering guard.
+// Apply never resolves {{clip}} at all, so this passes whether or not the
+// paste helper resolves clip before inputs; the real ordering guard is
+// internal/paste's TestClipBeforeInputsOrdering, which drives the whole
+// substitution sequence. This test only pins that Apply leaves a
+// clip-looking value alone.
+func TestApplyLeavesAClipLookingValueVerbatim(t *testing.T) {
 	body := "paste: {{text}}"
 	inputs := []artifact.Input{
 		{Name: "text", Type: "text", Required: mustBool(true)},

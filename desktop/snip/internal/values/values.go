@@ -17,8 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-
-	"github.com/ZacxDev/promptshipper/desktop/snip/internal/artifact"
 )
 
 // maxEntries bounds the file so a label/input churn cannot grow it without bound.
@@ -146,35 +144,4 @@ func Save(path string, f *File) error {
 		return err
 	}
 	return os.Rename(name, path)
-}
-
-// Prefill returns the effective starting value for an input:
-// 1. The remembered value (if one exists and is still valid for the input type).
-// 2. Otherwise the input's default.
-// A remembered select value that's no longer in options is dropped and the
-// default used instead.
-func Prefill(label string, in artifact.Input, f *File) string {
-	if v, _, ok := f.Get(label, in.Name); ok {
-		switch in.Type {
-		case "select":
-			if !inOption(v, in.Options) {
-				f.Remove(label, in.Name)
-				break
-			}
-			return v
-		default:
-			return v
-		}
-	}
-	// Fall back to the input's own default.
-	return in.DefaultString()
-}
-
-func inOption(v string, opts []string) bool {
-	for _, o := range opts {
-		if o == v {
-			return true
-		}
-	}
-	return false
 }

@@ -166,6 +166,7 @@ func TestInputValidationNamesTheFileAndRow(t *testing.T) {
 		wantIn string
 	}{
 		{"unknown type", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"bogus"}]}]`, `unknown type`},
+		{"empty name", `[{"label":"x","body":"{{a}}","inputs":[{"name":"","type":"text"}]}]`, `name is empty`},
 		{"bad name", `[{"label":"x","body":"{{A}}","inputs":[{"name":"A","type":"text"}]}]`, `does not match`},
 		{"reserved", `[{"label":"x","body":"{{clip}}","inputs":[{"name":"clip","type":"text"}]}]`, `reserved`},
 		{"duplicate name", `[{"label":"x","body":"{{a}} {{a}}","inputs":[{"name":"a","type":"text"},{"name":"a","type":"text"}]}]`, `duplicate`},
@@ -173,6 +174,8 @@ func TestInputValidationNamesTheFileAndRow(t *testing.T) {
 		{"empty option", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":[""]}]}]`, `option is empty`},
 		{"dup options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":["z","z"]}]}]`, `duplicate option`},
 		{"select default not in options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":["a"],"default":"b"}]}]`, `not in options`},
+		{"multiselect no options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"multiselect"}]}]`, `multiselect has no options`},
+		{"multiselect default element not in options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"multiselect","options":["p","q"],"default":["z"]}]}]`, `default element "z" is not in options`},
 		{"undeclared placeholder", `[{"label":"x","body":"{{typo}}","inputs":[{"name":"a","type":"text"}]}]`, `undeclared`},
 		{"never used", `[{"label":"x","body":"hello","inputs":[{"name":"a","type":"text"}]}]`, `never appears`},
 	}

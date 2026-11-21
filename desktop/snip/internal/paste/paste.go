@@ -23,7 +23,6 @@ package paste
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,11 +32,6 @@ import (
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/form"
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/telemetry"
 )
-
-// InputPlaceholderRE matches declared input placeholders ({{name}}) that
-// are NOT {{clip}} — used to check for unresolved placeholders after
-// substitution.
-var InputPlaceholderRE = regexp.MustCompile(`{{\w+}}`)
 
 // ClipVar is the clipboard variable: resolved at expand time from the X
 // clipboard before any input substitution, so a typed input value containing
@@ -216,17 +210,14 @@ func Run(eff effects.Effects, snippets []artifact.Snippet, req Request) Result {
 
 	// Substitute declared inputs from --set values, AFTER clip resolution.
 	// 🔴 THE ORDERING IS THE REQUIREMENT — clip first, then inputs.
+	// 🔴 Apply REFUSES any declared placeholder left unresolved (its own final
+	// pass), so there is deliberately no second check here: a duplicate would be
+	// unreachable and would read as coverage it cannot provide.
 	if !req.Ephemeral && snippet.HasInputs() {
 		var err error
 		body, err = form.Apply(body, snippet.Inputs, req.SetValues)
 		if err != nil {
 			return abort(fmt.Sprintf("input substitution: %v", err))
-		}
-		// After substitution, refuse any remaining declared placeholders.
-		for _, in := range snippet.Inputs {
-			if strings.Contains(body, "{{"+in.Name+"}}") {
-				return abort(fmt.Sprintf("input %q still unresolved after substitution", in.Name))
-			}
 		}
 	}
 

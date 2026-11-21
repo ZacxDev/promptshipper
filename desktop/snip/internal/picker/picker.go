@@ -644,8 +644,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		label, path, q, lat := m.editLabel, m.editPath, m.query, m.OpenLatencyMS
 		m.Selected = label
 		n := m
+		// 🔴 THE EDIT PASTE CARRIES THE ROW'S INPUT VALUES. An edit paste uses
+		// --body-file, and the helper's required-input pre-check refuses a paste
+		// whose declared inputs have no --set values — so a ctrl+e edit of a row
+		// with inputs would COMMIT the edit and then paste NOTHING (exit 1). Use
+		// the same prefill the form shows (declared default, then a remembered
+		// override) so the edited body's {{name}} placeholders are substituted
+		// and an unresolved placeholder is never pasted. Rows with no inputs
+		// keep spawning with nil, exactly as before.
+		var setVals map[string]string
+		if row, ok := artifact.Find(m.all, label); ok && row.HasInputs() {
+			setVals = n.prefillFormValues(row)
+		}
 		return m, func() tea.Msg {
-			return spawned{Err: n.fx.SpawnPaste(label, q, lat, path, nil)}
+			return spawned{Err: n.fx.SpawnPaste(label, q, lat, path, setVals)}
 		}
 	case spawned:
 		// 🔴 THE TUI CLOSES AS SOON AS THE HELPER IS SPAWNED. A spawn FAILURE

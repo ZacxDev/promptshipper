@@ -20,8 +20,13 @@ import (
 	"github.com/ZacxDev/promptshipper/desktop/snip/internal/values"
 )
 
-// prefillFormValues returns the initial values map for a snippet's inputs,
-// applying defaults and remembered values.
+// prefillFormValues returns the initial values map for a snippet's inputs:
+// the row's DECLARED default for each input, overridden by a remembered value
+// when one exists. A remembered `select` value that is no longer among the
+// input's options is dropped, so the declared default stands.
+//
+// 🔴 THE REMEMBERED VALUE WINS FOR EVERY TYPE. The declared default is only a
+// fallback; it must not overwrite a remembered value.
 func (m *Model) prefillFormValues(s artifact.Snippet) map[string]string {
 	vals := make(map[string]string, len(s.Inputs))
 	var vf *values.File
@@ -41,14 +46,6 @@ func (m *Model) prefillFormValues(s artifact.Snippet) map[string]string {
 				} else {
 					v = rv
 				}
-			}
-		}
-		if in.Type == "multiselect" {
-			defs := form.MultiDefault(in)
-			if len(defs) > 0 {
-				v = strings.Join(defs, form.JoinFor(in))
-			} else {
-				v = ""
 			}
 		}
 		vals[in.Name] = v
@@ -113,6 +110,13 @@ func (m Model) stepForm(msg tea.KeyPressMsg) (Model, []Intent) {
 				if m.formOptionCursor > 0 {
 					m.formOptionCursor--
 				}
+				// 🔴 ON A SELECT, MOVING IS CHOOSING. A select has no multi
+				// semantics, so the highlighted option IS the value — left/right
+				// commits it (brief: "left/right picks and the choice is shown
+				// inline"). A multiselect only moves the highlight; space toggles.
+				if in.Type == "select" && m.formOptionCursor < len(in.Options) {
+					m.formValues[in.Name] = in.Options[m.formOptionCursor]
+				}
 			}
 		}
 		return m, nil
@@ -123,23 +127,33 @@ func (m Model) stepForm(msg tea.KeyPressMsg) (Model, []Intent) {
 				if m.formOptionCursor < len(in.Options)-1 {
 					m.formOptionCursor++
 				}
+				if in.Type == "select" && m.formOptionCursor < len(in.Options) {
+					m.formValues[in.Name] = in.Options[m.formOptionCursor]
+				}
 			}
 		}
 		return m, nil
-	case " ":
+	case "space":
+		// 🔴 THE KEY IS "space", NOT " ". bubbletea reports a real space as
+		// Code=KeySpace/Text=" ", whose String() is "space" (Text==" " is the one
+		// value String() does not return); a case on " " never matched, so the
+		// toggle was dead. Space toggles a multiselect and commits a select; a
+		// space in a text field falls through to the typed-text arm below.
 		if m.formCursor < len(m.formSnippet.Inputs) {
 			in := m.formSnippet.Inputs[m.formCursor]
 			if in.Type == "select" {
 				if m.formOptionCursor < len(in.Options) {
 					m.formValues[in.Name] = in.Options[m.formOptionCursor]
 				}
-			} else if in.Type == "multiselect" {
+				return m, nil
+			}
+			if in.Type == "multiselect" {
 				if m.formOptionCursor < len(in.Options) {
 					m.formValues[in.Name] = toggleMultiOpt(m.formValues[in.Name], in.Options[m.formOptionCursor], form.JoinFor(in))
 				}
+				return m, nil
 			}
 		}
-		return m, nil
 	case "backspace":
 		if m.formCursor < len(m.formSnippet.Inputs) {
 			in := m.formSnippet.Inputs[m.formCursor]
