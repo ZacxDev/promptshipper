@@ -288,8 +288,17 @@ func (m Model) stepShared(msg tea.KeyPressMsg) (Model, []Intent) {
 		m.confirmClipID = m.filteredClips[m.cursor].ID
 		return m, nil
 	case "backspace":
-		if r := []rune(m.query); len(r) > 0 {
-			m.query = string(r[:len(r)-1])
+		if q := deleteRuneBackward(m.query); q != m.query {
+			m.query = q
+			m.cursor = 0
+			m.refilter()
+		}
+		return m, nil
+	case WordDeleteKey, WordDeleteAltKey:
+		// Delete the previous WORD — the same chord, and the same helper, as
+		// the browse filter; see edit.go.
+		if q := deleteWordBackward(m.query); q != m.query {
+			m.query = q
 			m.cursor = 0
 			m.refilter()
 		}

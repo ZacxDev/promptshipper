@@ -364,12 +364,54 @@ func TestBackspace(t *testing.T) {
 	}
 }
 
-// A MODIFIED key (ctrl+w etc.) must not grow the query.
+// A MODIFIED key that is NOT a binding must leave the query alone — the
+// failure this guards is a chord being typed into the filter as text. The
+// chords below are inert in the browse table; ctrl+w is NOT (it deletes a
+// word — see TestBrowseCtrlWDeletesWordBackward), so it is asserted there.
+//
+// 🔴 THE KEY IS NOW BUILT WITH NO `Text`, WHICH IS WHAT MAKES String() READ THE
+// CHORD. This test used to pass `Text: "w"` as well, so its String() was "w" —
+// it proved the query survives a key the browse table NEVER MATCHES. It passed
+// and measured nothing. `ctrl` (shared_test.go) is the construction a decoded
+// Ctrl+<letter> actually has.
 func TestModifiedKeysDoNotGrowQuery(t *testing.T) {
-	m := typeStr(newModel(&fakeLauncher{}), "ss")
-	m = upd(m, tea.KeyPressMsg{Code: 'w', Text: "w", Mod: tea.ModCtrl})
-	if m.query != "ss" {
-		t.Fatalf("ctrl+w grew the query to %q", m.query)
+	for _, r := range []rune{'a', 'd', 'h', 'k', 'u'} {
+		m := typeStr(newModel(&fakeLauncher{}), "ss")
+		m = upd(m, ctrl(r))
+		if m.query != "ss" {
+			t.Errorf("ctrl+%c changed the query to %q — a modified key is not text", r, m.query)
+		}
+	}
+}
+
+// ctrl+w is the chord the terminal sends for Ctrl+Backspace (WordDeleteKey) and
+// deletes the previous WORD in the browse filter, re-filtering as it goes. Both
+// spellings are driven, because only ONE of them reaches this operator's
+// machine and the other has to work on a terminal that reports the key.
+func TestBrowseCtrlWDeletesWordBackward(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{
+		ctrl('w'),
+		{Code: tea.KeyBackspace, Mod: tea.ModCtrl},
+	} {
+		m := typeStr(newModel(&fakeLauncher{}), "ssh host")
+		m = upd(m, key)
+		if m.query != "ssh " {
+			t.Fatalf("%q: query = %q, want %q", key.String(), m.query, "ssh ")
+		}
+		if want := len(Rank(catalog, "ssh ")); len(m.filtered) != want {
+			t.Fatalf("%q: rows = %d, want %d — the filter was not recomputed",
+				key.String(), len(m.filtered), want)
+		}
+		if m.cursor != 0 {
+			t.Fatalf("%q: cursor = %d, want 0 — a shortened query must re-anchor",
+				key.String(), m.cursor)
+		}
+		// A second press takes the last word too, back to the browse list.
+		m = upd(m, key)
+		if m.query != "" || len(m.filtered) != len(catalog) {
+			t.Fatalf("%q: second press gave query=%q rows=%d, want \"\" and the full list",
+				key.String(), m.query, len(m.filtered))
+		}
 	}
 }
 

@@ -436,3 +436,53 @@ func TestEditSpawnWithNoInputsPassesNilValues(t *testing.T) {
 		t.Fatalf("a row with no inputs must pass nil values, got %v", fx.setVals[0])
 	}
 }
+
+// ctrl+w deletes the previous WORD in the form's TEXT field — the chord the
+// terminal sends for Ctrl+Backspace (WordDeleteKey). Both spellings are driven,
+// because only ONE of them reaches this operator's terminal.
+func TestFormCtrlWDeletesWordBackwardInTextField(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{
+		ctrl('w'),
+		{Code: tea.KeyBackspace, Mod: tea.ModCtrl},
+	} {
+		fx := &fakeLauncher{}
+		m := enterForm(t, fx)
+		m = typeStr(m, "api gateway")
+		if got := m.formValues["service"]; got != "api gateway" {
+			t.Fatalf("fixture: text field = %q, want %q", got, "api gateway")
+		}
+		m = upd(m, key)
+		if got := m.formValues["service"]; got != "api " {
+			t.Fatalf("%q: text field = %q, want %q", key.String(), got, "api ")
+		}
+		// The last word goes on the next press, and a further press on the
+		// now-empty field is a no-op rather than a panic.
+		m = upd(m, key)
+		m = upd(m, key)
+		if got := m.formValues["service"]; got != "" {
+			t.Fatalf("%q: text field = %q, want empty", key.String(), got)
+		}
+	}
+}
+
+// 🔴 AND IT IS INERT ON A SELECT/MULTISELECT — those values are CHOSEN, not
+// typed, so there is no word to delete and the chord must not silently rewrite
+// one. A blurred TEXT field is left alone here as well: the delete targets the
+// focused field, so formCursor decides, not "the last thing typed".
+func TestFormCtrlWIsInertOnChosenFields(t *testing.T) {
+	fx := &fakeLauncher{}
+	m := enterForm(t, fx)
+	m = typeStr(m, "svc")
+	m = upd(m, keyTab()) // -> env (select)
+	m = upd(m, keyTab()) // -> scopes (multiselect)
+	if m.formCursor != 2 {
+		t.Fatalf("fixture: formCursor = %d, want 2", m.formCursor)
+	}
+	env, scopes, text := m.formValues["env"], m.formValues["scopes"], m.formValues["service"]
+	m = upd(m, ctrl('w'))
+	if m.formValues["env"] != env || m.formValues["scopes"] != scopes || m.formValues["service"] != text {
+		t.Fatalf("ctrl+w changed a CHOSEN value or a blurred text field: "+
+			"env %q->%q, scopes %q->%q, service %q->%q",
+			env, m.formValues["env"], scopes, m.formValues["scopes"], text, m.formValues["service"])
+	}
+}
