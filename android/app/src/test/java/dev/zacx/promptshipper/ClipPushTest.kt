@@ -401,7 +401,8 @@ class ClipPushTest {
                         after == 0L -> ClipPush.Poll.Rows(emptyList(), head = 4_377L)
                         after == 4_377L ->
                             ClipPush.Poll.Rows(listOf(clip(4_378, "mcp", "pushed after the re-pair")), head = 4_378L)
-                        else -> ClipPush.Poll.Rows(emptyList(), head = 4_377L)
+                        // Head never moves backwards, so the copied clip is not re-read.
+                        else -> ClipPush.Poll.Rows(emptyList(), head = maxOf(after, 4_377L))
                     }
                 }
             },
@@ -423,6 +424,7 @@ class ClipPushTest {
                 "the re-pair waited on the old server's held poll: nothing copied from the new one",
                 copiedNew.await(5, TimeUnit.SECONDS),
             )
+            Thread.sleep(200) // a re-copy would land here
             assertEquals(listOf("pushed after the re-pair"), copied.toList())
         } finally {
             releaseOld.countDown()
