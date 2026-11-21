@@ -158,10 +158,19 @@ func (m Model) stepForm(msg tea.KeyPressMsg) (Model, []Intent) {
 		if m.formCursor < len(m.formSnippet.Inputs) {
 			in := m.formSnippet.Inputs[m.formCursor]
 			if in.Type == "text" {
-				v := m.formValues[in.Name]
-				if r := []rune(v); len(r) > 0 {
-					m.formValues[in.Name] = string(r[:len(r)-1])
-				}
+				m.formValues[in.Name] = deleteRuneBackward(m.formValues[in.Name])
+			}
+		}
+		return m, nil
+	case WordDeleteKey, WordDeleteAltKey:
+		// Delete the previous WORD in the text field — the chord the terminal
+		// sends for Ctrl+Backspace (see edit.go). Inert on a select or a
+		// multiselect, whose value is chosen rather than typed: there is no
+		// word to delete and `ctrl+u` is not bound for them either.
+		if m.formCursor < len(m.formSnippet.Inputs) {
+			in := m.formSnippet.Inputs[m.formCursor]
+			if in.Type == "text" {
+				m.formValues[in.Name] = deleteWordBackward(m.formValues[in.Name])
 			}
 		}
 		return m, nil

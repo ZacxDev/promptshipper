@@ -803,6 +803,10 @@ func keyTableOf(t *testing.T, file, funcName string) map[string]bool {
 						keys[SharedKey] = true
 					case "DeleteKey":
 						keys[DeleteKey] = true
+					case "WordDeleteKey":
+						keys[WordDeleteKey] = true
+					case "WordDeleteAltKey":
+						keys[WordDeleteAltKey] = true
 					default:
 						t.Fatalf("%s: case %s is an identifier this guard cannot "+
 							"resolve — resolve it here rather than letting the "+
@@ -856,6 +860,10 @@ func TestTheSharedChordsCollideWithNothing(t *testing.T) {
 	// box; the chords an operator's hands produce there without meaning to are
 	// exactly these, and one of them deleting a clip is the accident this
 	// constant is chosen to prevent.
+	// ⚠ ctrl+w is now a REAL binding in these tables — the word-delete chord,
+	// WordDeleteKey (edit.go). That does not weaken this list; it strengthens
+	// it: the chord now arrives from muscle memory at a key that DOES
+	// something, so it must still not be the destructive one.
 	for _, k := range []string{"ctrl+w", "ctrl+u", "ctrl+k", "ctrl+d", "ctrl+h", "ctrl+a"} {
 		if DeleteKey == k {
 			t.Errorf("%s is a readline editing chord — it can arrive from typing", DeleteKey)
@@ -864,6 +872,29 @@ func TestTheSharedChordsCollideWithNothing(t *testing.T) {
 	// It must be a MODIFIED chord, not a printable key.
 	if !strings.HasPrefix(DeleteKey, "ctrl+") {
 		t.Errorf("%s is not a ctrl chord — a plain key types itself into the filter", DeleteKey)
+	}
+
+	// 🔴 AND ALL THREE TEXT TABLES NAME THE WORD-DELETE CHORD — BOTH spellings
+	// of it. This ledger is the only surface that can see a binding silently
+	// DROPPED: a behavioural test drives the model, so a case label deleted
+	// from one table while another keeps it still passes every test written
+	// against the survivor. Read from the SOURCE, exactly like the collision
+	// check above — and form.go is read here for the same reason, its text
+	// field being the third box.
+	for _, tbl := range []struct {
+		file string
+		keys map[string]bool
+	}{
+		{"picker.go", browseKeys},
+		{"shared.go", sharedKeys},
+		{"form.go", keyTableOf(t, "form.go", "stepForm")},
+	} {
+		for _, want := range []string{WordDeleteKey, WordDeleteAltKey} {
+			if !tbl.keys[want] {
+				t.Errorf("%s does not name %q — the word-delete chord is DEAD in "+
+					"that table (%v)", tbl.file, want, tbl.keys)
+			}
+		}
 	}
 }
 
@@ -1516,4 +1547,35 @@ func clipIDsOf(cs []shared.Clip) []int64 {
 		out = append(out, c.ID)
 	}
 	return out
+}
+
+// ctrl+w deletes the previous WORD in the CLIP filter too — the same chord and
+// the same helper as the browse filter (edit.go). Both spellings are driven,
+// because only ONE of them reaches this operator's terminal.
+func TestSharedCtrlWDeletesWordBackward(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{
+		ctrl('w'),
+		{Code: tea.KeyBackspace, Mod: tea.ModCtrl},
+	} {
+		fx := &fakeLauncher{clips: clipRows}
+		m := enterShared(t, fx)
+		m = typeStr(m, "two words")
+		m = upd(m, key)
+		if m.query != "two " {
+			t.Fatalf("%q: query = %q, want %q", key.String(), m.query, "two ")
+		}
+		if want := len(RankShared(clipRows, "two ")); len(m.filteredClips) != want {
+			t.Fatalf("%q: rows = %d, want %d — the clip filter was not recomputed",
+				key.String(), len(m.filteredClips), want)
+		}
+		if m.cursor != 0 {
+			t.Fatalf("%q: cursor = %d, want 0", key.String(), m.cursor)
+		}
+		// The last word goes on the next press, back to the whole list.
+		m = upd(m, key)
+		if m.query != "" || len(m.filteredClips) != len(clipRows) {
+			t.Fatalf("%q: second press gave query=%q rows=%d, want \"\" and all %d",
+				key.String(), m.query, len(m.filteredClips), len(clipRows))
+		}
+	}
 }

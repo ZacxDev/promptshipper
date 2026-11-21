@@ -1111,8 +1111,18 @@ func (m Model) Step(msg tea.KeyPressMsg) (Model, []Intent) {
 		m.editPath = ""
 		return m, []Intent{Edit{Label: sel.Label, Body: sel.Body}}
 	case "backspace":
-		if r := []rune(m.query); len(r) > 0 {
-			m.query = string(r[:len(r)-1])
+		if q := deleteRuneBackward(m.query); q != m.query {
+			m.query = q
+			m.cursor = 0
+			m.refilter()
+		}
+		return m, nil
+	case WordDeleteKey, WordDeleteAltKey:
+		// Delete the previous WORD. Both spellings of the operator's
+		// Ctrl+Backspace land here — see edit.go for which one the terminal
+		// actually sends, and why neither can be assumed.
+		if q := deleteWordBackward(m.query); q != m.query {
+			m.query = q
 			m.cursor = 0
 			m.refilter()
 		}
