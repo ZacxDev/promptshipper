@@ -38,8 +38,8 @@ android {
         //
         // promptshipper restarts the series at 0.1.0: it is a NEW applicationId,
         // so nothing installed carries a higher versionCode than this one.
-        versionCode = 100
-        versionName = "0.1.0"
+        versionCode = 101
+        versionName = "0.1.1"
         // Instrumented tests only (androidTest/). They never run in CI —
         // there is no device there — and they are packaged into a SEPARATE
         // test APK, so this adds nothing to app-debug.apk. See the
