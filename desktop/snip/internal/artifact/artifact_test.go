@@ -44,9 +44,6 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
-// 🔴 FAIL LOUD AND NAME THE FILE — a broken artifact must say WHICH file is
-// broken, because every consumer of the tool is otherwise unusable with
-// nothing pointing at the cause.
 func TestValidationFailsLoudNamingTheFile(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -68,16 +65,12 @@ func TestValidationFailsLoudNamingTheFile(t *testing.T) {
 		if !strings.Contains(err.Error(), c.wantIn) {
 			t.Errorf("%s: error %q does not name the cause %q", c.name, err, c.wantIn)
 		}
-		// The FILE name must be in the message — that is the whole point.
 		if !strings.Contains(err.Error(), path) {
 			t.Errorf("%s: error %q does not name the file %q", c.name, err, path)
 		}
 	}
 }
 
-// A MISSING file is its own loud failure (the operator switched to a config
-// that no longer writes the artifact, or runs snip on a machine that never
-// had it — both must say so).
 func TestMissingFileNamesTheFile(t *testing.T) {
 	_, err := Load("/nonexistent/snip/snippets.json")
 	if err == nil || !strings.Contains(err.Error(), "/nonexistent/snip/snippets.json") {
@@ -93,7 +86,6 @@ func TestFindIsExact(t *testing.T) {
 	if s, ok := Find(snippets, "Paste from clipboard"); !ok || s.Body != "{{clip}}" {
 		t.Fatalf("Find(Paste from clipboard) = %+v %v", s, ok)
 	}
-	// Label matching is EXACT — no substring, no case-folding.
 	if _, ok := Find(snippets, "Paste from clipboar"); ok {
 		t.Fatal("Find must be exact; a substring is not the label")
 	}
@@ -111,5 +103,98 @@ func TestPathResolution(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/cfg")
 	if p, _ := Path(); p != "/xdg/cfg/snip/snippets.json" {
 		t.Fatalf("XDG_CONFIG_HOME resolution wrong: %s", p)
+	}
+}
+
+// --- input validation ---
+
+func TestRowsWithoutInputsStillLoad(t *testing.T) {
+	got, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	for _, s := range got {
+		if s.HasInputs() {
+			t.Fatalf("row %q unexpectedly has inputs", s.Label)
+		}
+	}
+}
+
+var validWithInputs = `[
+  {"label": "Deploy", "body": "Deploy {{service}} to {{env}}, then verify {{scopes}}.",
+   "search_terms": ["deploy"], "category": "prompt",
+   "inputs": [
+     {"name": "service", "type": "text", "prompt": "Service", "required": true},
+     {"name": "env", "type": "select", "prompt": "Environment", "options": ["staging", "prod"], "default": "staging"},
+     {"name": "scopes", "type": "multiselect", "prompt": "Scopes", "options": ["api", "web", "db"], "default": ["api"], "join": ", "}
+   ]}
+]`
+
+func TestRowWithInputsRoundTrips(t *testing.T) {
+	got, err := Load(write(t, validWithInputs))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	s := got[0]
+	if !s.HasInputs() {
+		t.Fatal("row should have inputs")
+	}
+	if len(s.Inputs) != 3 {
+		t.Fatalf("inputs = %d, want 3", len(s.Inputs))
+	}
+	if s.Inputs[0].Name != "service" || s.Inputs[0].Type != "text" {
+		t.Fatalf("input 0: %+v", s.Inputs[0])
+	}
+	if s.Inputs[1].Type != "select" || len(s.Inputs[1].Options) != 2 {
+		t.Fatalf("input 1: %+v", s.Inputs[1])
+	}
+	if s.Inputs[2].Type != "multiselect" || s.Inputs[2].Join != ", " {
+		t.Fatalf("input 2: %+v", s.Inputs[2])
+	}
+}
+
+func TestInputValidationNamesTheFileAndRow(t *testing.T) {
+	cases := []struct {
+		name   string
+		json   string
+		wantIn string
+	}{
+		{"unknown type", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"bogus"}]}]`, `unknown type`},
+		{"empty name", `[{"label":"x","body":"{{a}}","inputs":[{"name":"","type":"text"}]}]`, `name is empty`},
+		{"bad name", `[{"label":"x","body":"{{A}}","inputs":[{"name":"A","type":"text"}]}]`, `does not match`},
+		{"reserved", `[{"label":"x","body":"{{clip}}","inputs":[{"name":"clip","type":"text"}]}]`, `reserved`},
+		{"duplicate name", `[{"label":"x","body":"{{a}} {{a}}","inputs":[{"name":"a","type":"text"},{"name":"a","type":"text"}]}]`, `duplicate`},
+		{"select no options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select"}]}]`, `no options`},
+		{"empty option", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":[""]}]}]`, `option is empty`},
+		{"dup options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":["z","z"]}]}]`, `duplicate option`},
+		{"select default not in options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"select","options":["a"],"default":"b"}]}]`, `not in options`},
+		{"multiselect no options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"multiselect"}]}]`, `multiselect has no options`},
+		{"multiselect default element not in options", `[{"label":"x","body":"{{a}}","inputs":[{"name":"a","type":"multiselect","options":["p","q"],"default":["z"]}]}]`, `default element "z" is not in options`},
+		{"undeclared placeholder", `[{"label":"x","body":"{{typo}}","inputs":[{"name":"a","type":"text"}]}]`, `undeclared`},
+		{"never used", `[{"label":"x","body":"hello","inputs":[{"name":"a","type":"text"}]}]`, `never appears`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := write(t, c.json)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("Load should have failed for %s", c.name)
+			}
+			if !strings.Contains(err.Error(), c.wantIn) {
+				t.Fatalf("error %q does not contain %q", err, c.wantIn)
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Fatalf("error %q does not name the file %q", err, path)
+			}
+			if !strings.Contains(err.Error(), `"x"`) {
+				t.Fatalf("error %q does not name the row label", err)
+			}
+		})
 	}
 }

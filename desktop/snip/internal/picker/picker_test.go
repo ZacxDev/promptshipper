@@ -18,7 +18,8 @@ type fakeLauncher struct {
 	spawned   []string // labels
 	queries   []string // the SNIP_QUERY handed to each spawn
 	openMS    []int64
-	bodyFiles []string // the SNIP paste --body-file handed to each spawn ("" normally)
+	bodyFiles []string            // the SNIP paste --body-file handed to each spawn ("" normally)
+	setVals   []map[string]string // the --set values handed to each SpawnPaste (nil when none)
 	spawnErr  error
 	toasts    []string
 
@@ -78,11 +79,21 @@ func (f *fakeLauncher) SpawnPasteClip(id int64, body, query string, openLatencyM
 	return f.spawnErr
 }
 
-func (f *fakeLauncher) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string) error {
+func (f *fakeLauncher) SpawnPaste(label, query string, openLatencyMS int64, bodyFile string, setValues map[string]string) error {
 	f.spawned = append(f.spawned, label)
 	f.queries = append(f.queries, query)
 	f.openMS = append(f.openMS, openLatencyMS)
 	f.bodyFiles = append(f.bodyFiles, bodyFile)
+	// A COPY, and nil stays nil: the form path passes a map and the direct path
+	// passes nil, and a later mutation must not rewrite what was recorded.
+	var captured map[string]string
+	if setValues != nil {
+		captured = make(map[string]string, len(setValues))
+		for k, v := range setValues {
+			captured[k] = v
+		}
+	}
+	f.setVals = append(f.setVals, captured)
 	return f.spawnErr
 }
 

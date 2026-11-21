@@ -24,8 +24,11 @@ catalog.
   landing script (see [The ctrl+e landing](#the-ctrle-landing)). An emptied
   body offers to **delete** the row after an explicit `[y/N]` confirm — the
   mode is a flag, never an inference from an empty file.
-- **`{{clip}}`** — the one variable a body may carry, resolved at expand time
-  from the X clipboard (no shell vars, no date vars, no forms).
+- **`{{clip}}`** — resolved at expand time from the X clipboard (no shell vars,
+  no date vars). **Declared inputs** (`{{service}}`, `{{env}}`, …) — typed
+  inputs you fill via a form in the picker or `--set name=value` on the CLI,
+  substituted AFTER clip resolution so a typed value containing the literal
+  text `{{clip}}` stays literal.
 - **`ctrl+g` shared clipboard** — an opt-in second keypress that lists a
   cross-device clip store as a *disjoint mode* with its own list, filter and
   keys, and pastes a clip body into the origin window. Inside it, **`ctrl+x`
@@ -89,13 +92,52 @@ otherwise) and `dunstify` for failure toasts.
 ]
 ```
 
+Rows may also declare **inputs** — typed placeholders the picker prompts you to
+fill before pasting:
+
+```json
+{
+  "label": "Deploy to an environment",
+  "body": "Deploy {{service}} to {{env}}, then verify {{scopes}}.",
+  "search_terms": ["deploy"],
+  "category": "prompt",
+  "inputs": [
+    { "name": "service", "type": "text", "prompt": "Service", "default": "", "required": true },
+    { "name": "env", "type": "select", "prompt": "Environment", "options": ["staging", "prod"], "default": "staging" },
+    { "name": "scopes", "type": "multiselect", "prompt": "Scopes", "options": ["api", "web", "db"], "default": ["api"], "join": ", " }
+  ]
+}
+```
+
 - `label` — the row's identity. Must be non-empty and unique; the loader
   refuses the whole file otherwise, loudly, naming the file and row.
-- `body` — the expansion text; may carry `{{clip}}`.
+- `body` — the expansion text; may carry `{{clip}}` and declared `{{name}}`
+  placeholders.
 - `search_terms` — declared tokens; a query reaching a row through them
   outranks one that only spells it in the label.
 - `category` — picks the row icon and label colour (path/ssh/kubeconfig/
   prompt/clipboard are known; anything else renders the plain default).
+- `inputs` (optional) — declared, typed inputs collected before the paste.
+
+### Inputs
+
+An `inputs` array declares the placeholders the body carries. Three types:
+
+- **text** — single-line free text. `prompt` (label, falls back to `name`),
+  `default` (string), `required` (bool, defaults to `true`).
+- **select** — one of a fixed set of `options`. Always required. `default` is
+  one of the options.
+- **multiselect** — zero or more of a fixed set of `options`. Zero selected is
+  legal (substitutes empty). `join` is the delimiter (default `", "`).
+
+Rules enforced at load time (name the file + row + field):
+
+- `name` must match `[a-z][a-z0-9_]*`; `"clip"` is reserved.
+- `type` must be `text`, `select` or `multiselect`.
+- Every `{{name}}` in the body must be a declared input (or `{{clip}}`), and
+  every declared input must appear in the body (dead config is refused).
+- `{{clip}}` is NOT an input — it is resolved separately, FIRST, so a typed
+  value containing the literal text `{{clip}}` stays literal.
 
 Typically the file is *generated* from a declarative source (nix, home-manager,
 a template) at deploy time — that is what the ctrl+e landing assumes.
@@ -106,20 +148,27 @@ a template) at deploy time — that is what the ctrl+e landing assumes.
 snip                 the picker TUI (default; also `snip picker`)
 snip paste           the detached paste helper (spawned by the picker)
   --label L          the snippet to paste, by its label (required)
+  --set name=value   the input value for a declared input (repeatable)
   --body-file F      paste F's contents instead of the artifact's body
   --ephemeral        paste F's contents WITHOUT loading the catalog
                      (the shared clipboard's path)
 snip list            the catalog as a table (--category C to filter)
 snip search QUERY    ranked matches (the same matcher the picker runs)
-snip get LABEL       the raw body ({{clip}} unresolved)
-snip expand LABEL    the resolved expansion ({{clip}} from the X clipboard)
+snip get LABEL       the raw body (inputs and {{clip}} unresolved)
+snip expand LABEL    the resolved expansion ({{clip}} from the X clipboard,
+                     --set name=value for declared inputs)
 ```
 
 Exit codes: `0` success/no-op (a picker cancel is 0), `1` a real failure
 (config, X11, paste path), `2` usage.
 
-Picker keys: `↑/↓` move · `⏎` paste · `ctrl+e` edit · `ctrl+g` shared
-clipboard · `esc` cancel.
+Picker keys: `↑/↓` move · `⏎` paste (or open the input form when the row
+declares inputs) · `ctrl+e` edit · `ctrl+g` shared clipboard · `esc` cancel.
+Rows with inputs show a trailing `…` marker.
+
+Form keys (entered when the selected row declares inputs): `tab/↑/↓` move
+between fields · `←/→` pick options · `space` toggle · `⏎` submit · `ctrl+u`
+clear text · `esc` back to the list.
 
 Shared-clipboard keys (`ctrl+g`, a disjoint table — nothing falls through to
 the ones above): `↑/↓` move · `⏎` paste the clip · `ctrl+x` delete the clip
