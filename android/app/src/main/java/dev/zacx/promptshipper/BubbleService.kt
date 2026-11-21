@@ -1834,6 +1834,10 @@ class BubbleService : Service() {
                     val listener = clipPush
                     when {
                         listener == null -> if (screenIsInteractive()) startClipPush()
+                        // A re-pair: drop the poll the OLD server holds open
+                        // (ClipPushListener.restart). Running only, so a
+                        // screen-off change still never STARTS the push.
+                        key in CLIP_SERVER_KEYS && listener.isRunning -> listener.restart()
                         // Screen on: start or stop to match the setting.
                         screenIsInteractive() -> listener.reconcile()
                         // Screen off: never START here, but do honour a stop.
@@ -2576,6 +2580,12 @@ class BubbleService : Service() {
         /** Preference keys the agent push depends on; see [clipPushPrefs]. */
         internal val CLIP_PUSH_KEYS: Set<String> = setOf(
             ClipSettings.KEY_AGENT_PUSH,
+            ClipSettings.KEY_BASE_URL,
+            ClipSettings.KEY_TOKEN_CIPHERTEXT,
+        )
+
+        /** The subset of [CLIP_PUSH_KEYS] naming the clip server: a change restarts the push. */
+        internal val CLIP_SERVER_KEYS: Set<String> = setOf(
             ClipSettings.KEY_BASE_URL,
             ClipSettings.KEY_TOKEN_CIPHERTEXT,
         )

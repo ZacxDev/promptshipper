@@ -52,11 +52,28 @@ class ClipPushListener(
 
     /**
      * Start or stop to match [enabled] NOW — for a setting toggled, or a
-     * pairing completed, while the bubble runs.
+     * first pairing completed, while the bubble runs. A RE-pair of a running
+     * listener needs [restart].
      */
     @Synchronized
     fun reconcile() {
         if (enabled()) start() else stop()
+    }
+
+    /**
+     * Stop, then start against the settings as they are NOW — for a re-pair.
+     *
+     * [reconcile] is not enough there: a running listener sits in a long-poll
+     * held open by the OLD server for up to [ClipPush.WAIT_S]. When it returns,
+     * the loop discards it (its seqs belong to another store) and starts at the
+     * new server's head, past any push sent to the new server meanwhile, so
+     * that push is never copied. A fresh thread reads the new head at once;
+     * the old thread's late answer copies nothing ([stop]'s contract).
+     */
+    @Synchronized
+    fun restart() {
+        stop()
+        start()
     }
 
     @Synchronized
