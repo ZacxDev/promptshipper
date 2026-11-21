@@ -367,6 +367,72 @@ class ClipPushTest {
     }
 
     @Test
+    fun aRePairWhileTheOldServerHoldsAPollCopiesTheNewServersPush() {
+        // Device pass 2026-11-20: after a re-pair the first agent push was not
+        // copied until the bubble was toggled. The listener stayed in a
+        // long-poll held open by the OLD server; when it returned, the loop
+        // discarded it and started at the new server's head, past the push.
+        val ctx = RuntimeEnvironment.getApplication()
+        val prefs = SttSettings.prefs(ctx)
+        val settings = ClipSettings(prefs, TokenStore(prefs, object : SecretCipher {
+            override fun encrypt(plaintext: String) = plaintext
+            override fun decrypt(blob: String): String? = blob
+        }, ClipSettings.KEY_TOKEN_CIPHERTEXT))
+        val oldBase = "http://192.168.7.31:8139"
+        val newBase = "http://10.9.8.7:8139"
+        settings.baseUrl = oldBase
+        settings.pushCursor = 6_101L
+        val oldPollHeld = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val copied = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val copiedNew = CountDownLatch(1)
+        val listener = ClipPushListener(
+            enabled = { settings.agentPush && settings.baseUrl != null },
+            poll = { after, _, limit ->
+                if (settings.baseUrl == oldBase) {
+                    if (after == 6_101L && limit == ClipPush.LIMIT) {
+                        // Catch-up at the old server, then the live long-poll it holds.
+                        if (oldPollHeld.count == 0L) releaseOld.await(20, TimeUnit.SECONDS)
+                        oldPollHeld.countDown()
+                    }
+                    ClipPush.Poll.Rows(emptyList(), head = 6_101L)
+                } else {
+                    when {
+                        after == 0L -> ClipPush.Poll.Rows(emptyList(), head = 4_377L)
+                        after == 4_377L ->
+                            ClipPush.Poll.Rows(listOf(clip(4_378, "mcp", "pushed after the re-pair")), head = 4_378L)
+                        // Head never moves backwards, so the copied clip is not re-read.
+                        else -> ClipPush.Poll.Rows(emptyList(), head = maxOf(after, 4_377L))
+                    }
+                }
+            },
+            loadCursor = { settings.pushCursor },
+            saveCursor = { settings.pushCursor = it },
+            copy = { copied += it; copiedNew.countDown() },
+            sleeper = { Thread.sleep(it.coerceAtMost(20)) },
+            generation = { settings.baseUrl },
+        )
+        val c = serviceWith(listener, interactive = true)
+        try {
+            assertTrue("never reached the old server's held poll", oldPollHeld.await(5, TimeUnit.SECONDS))
+            Thread.sleep(100) // the live long-poll is now held by the old server
+            // The re-pair, in PairingWriter's order.
+            settings.baseUrl = newBase
+            settings.pushCursor = null
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertTrue(
+                "the re-pair waited on the old server's held poll: nothing copied from the new one",
+                copiedNew.await(5, TimeUnit.SECONDS),
+            )
+            Thread.sleep(200) // a re-copy would land here
+            assertEquals(listOf("pushed after the re-pair"), copied.toList())
+        } finally {
+            releaseOld.countDown()
+            c.destroy()
+        }
+    }
+
+    @Test
     fun aDisabledOrUnpairedListenerNeverPolls() {
         var polls = 0
         val listener = ClipPushListener(
