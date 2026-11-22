@@ -224,6 +224,28 @@ class BubbleDictation(
         object ClipTapped : Event
 
         /**
+         * The **close** button inside the long-press reveal: turn the bubble
+         * off.
+         *
+         * 🔴 Routed through the machine for its three siblings' reason: `on()`
+         * already prefixes [Effect.HideActions] to every event that is not a
+         * long press, so "the reveal goes away, then the bubble stops" needs no
+         * second dismissal path in the shell.
+         *
+         * 🔴 It can reach **no** microphone path, and it is the one reveal
+         * button that opens no window at all. The arm emits [Effect.StopBubble]
+         * and nothing else, and the shell carries that out exactly as it carries
+         * out the notification's *Hide bubble* action — the same function, not
+         * a copy of it.
+         *
+         * Honoured only in IDLE, like its siblings. In RECORDING the reveal
+         * cannot be open, and stopping the service there would drop a live
+         * recording on the floor — the one thing a close button must never be
+         * able to do by accident.
+         */
+        object CloseTapped : Event
+
+        /**
          * Capture could not start at all, and [failure] says why — the shell
          * knows which of its own steps refused, and the user needs to be told
          * which.
@@ -368,6 +390,18 @@ class BubbleDictation(
          * floating over the picker's own window.
          */
         object OpenClipPicker : Effect
+
+        /**
+         * Turn the bubble off: clear the persisted "bubble enabled" flag and
+         * stop the service — the notification's *Hide bubble* action and the
+         * Quick Settings tile's off, reached from the reveal.
+         *
+         * 🔴 Emitted **after** the [HideActions] that `on()` prefixes, so the
+         * reveal is put away (and `FLAG_WATCH_OUTSIDE_TOUCH` disarmed) before
+         * the window goes. No confirmation, by decision: turning the bubble
+         * back on is one tap on the tile or the setup-screen switch.
+         */
+        object StopBubble : Effect
     }
 
     var state: State = State.IDLE
@@ -417,6 +451,7 @@ class BubbleDictation(
             Event.SnipTapped -> onSnipTapped()
             Event.HistoryTapped -> onHistoryTapped()
             Event.ClipTapped -> onClipTapped()
+            Event.CloseTapped -> onCloseTapped()
             is Event.CaptureFailed -> onCaptureFailed(event.failure)
             Event.MaxDurationReached -> onMaxDuration()
             Event.TranscriptSettled -> toIdle()
@@ -507,6 +542,21 @@ class BubbleDictation(
      */
     private fun onClipTapped(): List<Effect> =
         if (state == State.IDLE) listOf(Effect.OpenClipPicker) else emptyList()
+
+    /**
+     * The close button, honoured **only while idle** — and the state is left
+     * exactly as it was in all three cases.
+     *
+     * The sibling arms' shape and their inherited refusals, with one reason of
+     * its own on top: in RECORDING a stop would discard the recording without
+     * the user having asked for that, and in TRANSCRIBING it would tear down
+     * the service that is waiting for the transcript. Neither is reachable
+     * from today's wiring (the reveal opens only in IDLE); the guard is a
+     * claim about the machine, not about the wiring. `BubbleCloseStateTest`
+     * pins it.
+     */
+    private fun onCloseTapped(): List<Effect> =
+        if (state == State.IDLE) listOf(Effect.StopBubble) else emptyList()
 
     private fun onTap(micGranted: Boolean): List<Effect> = when (state) {
         State.IDLE -> {

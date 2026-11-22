@@ -210,8 +210,9 @@ class BubbleEnabledWritersSeamTest {
                 // writer in a source set the ledger cannot see is exactly the
                 // hole this ledger exists to close.
                 "DebugClipConfigReceiver.kt",
-                // The notification's "Hide bubble" action: clears the flag
-                // while stopping itself.
+                // The notification's "Hide bubble" action AND the long-press
+                // reveal's close button — both through one stopBubble(),
+                // which clears the flag while stopping itself.
                 "BubbleService.kt",
                 // The Quick Settings toggle.
                 "DictaTileService.kt",

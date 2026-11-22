@@ -563,11 +563,16 @@ class BubbleClipRevealTest {
         val historyBlock: Int = field(service, "historyBlockPx")
         val snipBlock: Int = field(service, "snipBlockPx")
         val clipBlock: Int = field(service, "clipBlockPx")
+        // 🔴 The close button (BubbleCloseRevealTest) is a FOURTH reveal block
+        // below this one, so the window's real bottom now includes it. The
+        // claim here — that the clip term is load-bearing — is unchanged: a
+        // window that forgot clip would clamp exactly one clip block lower.
+        val closeBlock: Int = field(service, "closeBlockPx")
 
         dragTo(service, 9000f)
         val y = params(service).y
 
-        val twoBlockBottom = screenHeight - (halo + historyBlock + snipBlock)
+        val twoBlockBottom = screenHeight - (halo + historyBlock + snipBlock + closeBlock)
         assertTrue(
             "the clamp put the window at y=$y, which is exactly where a " +
                 "TWO-block reveal would have left it ($twoBlockBottom) — so " +
@@ -577,9 +582,9 @@ class BubbleClipRevealTest {
             y < twoBlockBottom,
         )
         assertEquals(
-            "the clamped position is not the three-block bottom either, so " +
+            "the clamped position is not the full-reveal bottom either, so " +
                 "something other than windowHeightPx decided it",
-            screenHeight - (halo + historyBlock + snipBlock + clipBlock),
+            screenHeight - (halo + historyBlock + snipBlock + clipBlock + closeBlock),
             y,
         )
     }

@@ -102,6 +102,8 @@
     <string name="copy">Copy</string>
     <string name="share">Send</string>
     <string name="close">Close</string>
+    <!-- The card's ⋮ overflow, which holds Screenshot, Send and Save audio. -->
+    <string name="more_actions">More actions</string>
     <string name="copied">Copied to clipboard</string>
     <string name="nothing_to_copy">Nothing to copy yet — dictate something first.</string>
     <string name="nothing_to_share">Nothing to send yet — dictate something or attach a screenshot first.</string>
@@ -617,6 +619,13 @@
          must not announce the same thing as either sibling, which
          BubbleClipRevealTest asserts. -->
     <string name="bubble_clip">Shared clipboard — search and copy one from any device</string>
+
+    <!-- The FOURTH satellite button: turns the bubble off, exactly as the
+         notification's Hide bubble action does. Says what tapping DOES and
+         how to undo it, in words, because its only other cue is a red ✕ —
+         and colour is never the only cue (colors.xml). Distinct from
+         @string/bubble_cancel, which labels the ✕ that discards a recording. -->
+    <string name="bubble_close">Close the bubble — turn it back on from the tile or the app</string>
 
     <!-- 🔴 The SAME button, announcing a queue that cannot drain. Not a second
          control and not a badge: the reveal has three buttons and gains no

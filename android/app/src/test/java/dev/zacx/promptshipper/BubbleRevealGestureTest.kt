@@ -286,18 +286,21 @@ class BubbleRevealGestureTest {
         // exists for, on a change that had not yet wired the new block into
         // windowHeightPx's sum. Measured on the tree that added the button.
         val clipBlock: Int = field(service, "clipBlockPx")
+        // WIDENED TO FOUR by the bubble's close button, for the same reason.
+        val closeBlock: Int = field(service, "closeBlockPx")
         assertTrue("precondition: the history block has a height", historyBlock > 0)
         assertTrue("precondition: the snip block has a height", snipBlock > 0)
         assertTrue("precondition: the clip block has a height", clipBlock > 0)
+        assertTrue("precondition: the close block has a height", closeBlock > 0)
 
         assertEquals(
             "the container grew by ${expanded - collapsed}px while the clamp " +
                 "was told the reveal adds " +
-                "${historyBlock + snipBlock + clipBlock}px. One of the three " +
+                "${historyBlock + snipBlock + clipBlock + closeBlock}px. One of the four " +
                 "blocks is understated, which is what tells clampY the " +
                 "window is shorter than it is and leaves the lower button " +
                 "off-screen on a bubble near the bottom edge.",
-            historyBlock + snipBlock + clipBlock,
+            historyBlock + snipBlock + clipBlock + closeBlock,
             expanded - collapsed,
         )
         assertEquals(

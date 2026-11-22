@@ -162,17 +162,37 @@ class BubbleService : Service() {
      * visibility applies here identically — which is why it is said once,
      * there.
      *
-     * 🔴 THIRD of the three, i.e. furthest from the bubble, and that ordering
-     * is a decision rather than append-where-convenient. History is nearest
-     * because it is what the long press meant before any of this; snip next
-     * because it has been there since 0.4.0; the shared clipboard last because
-     * it is the newest and the least likely to be what the finger that just
-     * long-pressed was reaching for. Being last also makes it the control the
-     * clamp is most likely to push off-screen, which is why [clipBlockPx]'s
-     * term in [windowHeightPx] is the one genuinely mutation-killable guard in
-     * this feature.
+     * 🔴 THIRD of the three pickers, and that ordering is a decision rather
+     * than append-where-convenient. History is nearest because it is what the
+     * long press meant before any of this; snip next because it has been there
+     * since 0.4.0; the shared clipboard last because it is the newest and the
+     * least likely to be what the finger that just long-pressed was reaching
+     * for. ⚠ It is no longer the bottom-most reveal control: [close] sits
+     * below it (see that field), so it is now [closeBlockPx]'s term that a
+     * forgotten line would leave off-screen first.
      */
     private var clip: ImageButton? = null
+
+    /**
+     * The close button inside the long-press reveal: turns the bubble off.
+     *
+     * Everything [snip]'s field says about being a child of the existing
+     * window, about sitting below the bubble and about [showActions] owning its
+     * visibility applies here identically.
+     *
+     * 🔴 LAST of the four reveal buttons, furthest from the finger that just
+     * long-pressed, and that is the point: it is the one reveal control whose
+     * effect is not a picker you can back out of. Its ✕ is tinted
+     * `@color/dicta_error` (6.68:1 on the bubble's surface_2 fill, 5.92:1 on
+     * the pressed surface_3), and its label says what it does in words — the
+     * red is the weakest of the three cues, never the only one.
+     *
+     * 🔴 NOT [cancel]. Both draw `ic_close`; [cancel] discards a live recording
+     * and is RECORDING-only, this stops the service and is reveal-only. They
+     * are never on screen together (the reveal opens only in IDLE), and their
+     * labels and tints differ so they cannot be mistaken for each other.
+     */
+    private var close: ImageButton? = null
 
     /**
      * The box holding the bubble and its pulse ring.
@@ -295,14 +315,21 @@ class BubbleService : Service() {
      * — the button plus the gap above it. [snipBlockPx]'s and [historyBlockPx]'s
      * triplet, and in the clamp for the same reason.
      *
-     * 🔴 This term is the one the reveal cannot afford to lose. Three 44dp
-     * buttons at 6dp gaps under an 84dp halo is **234dp of window**, and the
-     * clip button is the bottom-most of them (see the [clip] field) — so
-     * omitting this term leaves exactly that control off-screen on a bubble
-     * parked near the bottom edge: a button the user can see the top pixel of
-     * and cannot tap. `BubbleClipRevealTest` kills that mutation.
+     * 🔴 The reveal cannot afford to lose this term. Four 44dp buttons at 6dp
+     * gaps under an 84dp halo is **284dp of window**, and omitting this term
+     * understates it by one block — so the bottom-most control (now [close])
+     * ends up off-screen on a bubble parked near the bottom edge: a button the
+     * user can see the top pixel of and cannot tap. `BubbleClipRevealTest`
+     * kills that mutation.
      */
     private var clipBlockPx = 0
+
+    /**
+     * The close button's height plus its gap — the fourth reveal term in
+     * [windowHeightPx], and now the bottom-most one, so the term a forgotten
+     * line would leave off-screen. `BubbleCloseRevealTest` pins it.
+     */
+    private var closeBlockPx = 0
 
     /**
      * 🔴 Whether the long-press action buttons are on screen.
@@ -556,6 +583,7 @@ class BubbleService : Service() {
         snipBlockPx = ((SNIP_DP + SNIP_GAP_DP) * density).toInt()
         historyBlockPx = ((HISTORY_DP + HISTORY_GAP_DP) * density).toInt()
         clipBlockPx = ((CLIP_DP + CLIP_GAP_DP) * density).toInt()
+        closeBlockPx = ((CLOSE_DP + CLOSE_GAP_DP) * density).toInt()
 
         params = WindowManager.LayoutParams(
             // 🔴 WRAP_CONTENT, not the old fixed 60 dp square. The window has
@@ -727,6 +755,30 @@ class BubbleService : Service() {
         // does not become healthy because a process did.
         applyClipHealth(clipButton, ClipOutboxHealth.state())
 
+        // The reveal's FOURTH affordance: turn the bubble off. Built mirroring
+        // its three siblings — same 44 dp square, same bubble_bg, the
+        // contentDescription-and-tooltip pairing, no DragListener, the click
+        // through the machine — EXCEPT the tint, which is dicta_error on
+        // purpose: see the `close` field. Not `abort` above, which also draws
+        // ic_close but cancels a recording.
+        val closeButton = ImageButton(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                (CLOSE_DP * density).toInt(),
+                (CLOSE_DP * density).toInt(),
+            ).apply { topMargin = (CLOSE_GAP_DP * density).toInt() }
+            setImageResource(R.drawable.ic_close)
+            imageTintList = android.content.res.ColorStateList
+                .valueOf(getColor(R.color.dicta_error))
+            background = getDrawable(R.drawable.bubble_bg)
+            val closeLabel = getString(R.string.bubble_close)
+            contentDescription = closeLabel
+            tooltipText = closeLabel
+            visibility = View.GONE
+            setOnClickListener {
+                applyEffects(machine.on(BubbleDictation.Event.CloseTapped))
+            }
+        }
+
         // 🔴 THE CHIP `ListView` WAS BUILT HERE AND IS DELETED, along with its
         // adapter, its chip views, `REVEAL_SLOTS`, `REVEAL_WIDTH_DP`,
         // `CHIP_DP`/`CHIP_GAP_DP`, `REVEAL_WIDTH_DP`'s width arithmetic and the
@@ -756,24 +808,27 @@ class BubbleService : Service() {
             // at index 0, which is what `showReveal`'s `y` compensation existed
             // for and what made "above the bubble" a real position in this
             // container. With it gone the bubble is the first child and all
-            // FOUR optional controls hang BELOW it, in this order: history,
-            // snip, clip, cancel.
+            // FIVE optional controls hang BELOW it, in this order: history,
+            // snip, clip, close, cancel. Close is last of the reveal because
+            // it is the one whose effect cannot be backed out of — see the
+            // `close` field.
             //
             // History before snip before clip — see the `clip` field for the
             // whole ordering argument. Cancel last because `showCancel`'s
             // "below" arm appends at childCount.
             //
             // 🔴 Cancel's order relative to the other three is bookkeeping
-            // rather than layout, and the argument now has to cover FOUR
-            // controls: cancel is RECORDING-only while history, snip and clip
-            // are reveal-only, and the reveal opens only in IDLE, so cancel is
-            // never co-visible with any of them. The three reveal buttons ARE
-            // co-visible with each other, which is why all three of their
-            // blocks are in windowHeightPx.
+            // rather than layout, and the argument now has to cover FIVE
+            // controls: cancel is RECORDING-only while history, snip, clip and
+            // close are reveal-only, and the reveal opens only in IDLE, so
+            // cancel is never co-visible with any of them. The four reveal
+            // buttons ARE co-visible with each other, which is why all four of
+            // their blocks are in windowHeightPx.
             addView(bubbleBox)
             addView(historyButton)
             addView(snipButton)
             addView(clipButton)
+            addView(closeButton)
             addView(abort)
         }
 
@@ -801,6 +856,7 @@ class BubbleService : Service() {
         snip = snipButton
         history = historyButton
         clip = clipButton
+        close = closeButton
         bubble = button
         halo = bubbleBox
     }
@@ -911,18 +967,30 @@ class BubbleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            // 🔴 Clearing the flag is the whole of issue #14's "no way to get
-            // the bubble back". The notification's Hide action used to only
-            // stopSelf(), so MainActivity's switch — which derives from this
-            // flag — went on reading ON with nothing running, and a Switch
-            // fires its listener only on a CHANGE: tapping it did nothing and
-            // the operator had to toggle OFF then ON. stopSelf, not
-            // BubbleEnabled.turnOff: this service is already stopping itself.
-            BubbleEnabled.set(this, false)
-            stopSelf()
+            stopBubble()
             return START_NOT_STICKY
         }
         return START_STICKY
+    }
+
+    /**
+     * Turns the bubble off: the notification's *Hide bubble* action
+     * ([ACTION_STOP]) and the reveal's close button
+     * ([BubbleDictation.Effect.StopBubble]) both land HERE, so the two cannot
+     * come to disagree about what "off" means.
+     *
+     * 🔴 Clearing the flag is the whole of issue #14's "no way to get the
+     * bubble back". The notification's Hide action used to only stopSelf(), so
+     * MainActivity's switch — which derives from this flag — went on reading
+     * ON with nothing running, and a Switch fires its listener only on a
+     * CHANGE: tapping it did nothing and the operator had to toggle OFF then
+     * ON. stopSelf, not BubbleEnabled.turnOff: this service is already
+     * stopping itself. The window comes down in [onDestroy], as it does for
+     * every other stop.
+     */
+    private fun stopBubble() {
+        BubbleEnabled.set(this, false)
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -979,6 +1047,7 @@ class BubbleService : Service() {
         snip = null
         history = null
         clip = null
+        close = null
         halo = null
         // shutdownNow, like SettingsActivity: a probe in flight is worth
         // nothing once the window it belongs to is gone, and the executor is
@@ -1075,6 +1144,11 @@ class BubbleService : Service() {
                 // clipboard. Same HideActions ordering as the two arms
                 // above.
                 BubbleDictation.Effect.OpenClipPicker -> openClipPicker()
+                // Not a recording path and not a window: the service turns
+                // itself off, through the SAME function as the notification's
+                // Hide bubble action. The HideActions prefix has already put
+                // the reveal away.
+                BubbleDictation.Effect.StopBubble -> stopBubble()
             }
         }
         // 🔴 `state == IDLE ⇒ session == null` is relied on by startRecording()
@@ -1553,10 +1627,11 @@ class BubbleService : Service() {
      */
 
     /**
-     * Shows or hides the long-press action buttons — history and snip.
+     * Shows or hides the long-press action buttons — history, snip, clip and
+     * close.
      *
      * 🔴 **One predicate, written here and read nowhere else.** [actionsShown]
-     * is this function's field; both buttons' visibilities are set in BOTH arms,
+     * is this function's field; all four buttons' visibilities are set in BOTH arms,
      * together, every time. A second predicate elsewhere — in `renderState`, in
      * a click handler — is how a reveal-only control becomes an always-on
      * surface, which is the one thing issue #38 and this repo's "everything the
@@ -1581,11 +1656,12 @@ class BubbleService : Service() {
         val visibility = if (show) View.VISIBLE else View.GONE
         history?.visibility = visibility
         snip?.visibility = visibility
-        // 🔴 In the SAME call as its two siblings, set together, every
-        // time. That is this function's whole discipline: a reveal-only
+        // 🔴 In the SAME call as its siblings (clip, and close below), set
+        // together, every time. That is this function's whole discipline: a reveal-only
         // control whose visibility is decided anywhere else is how one
         // becomes an always-on surface.
         clip?.visibility = visibility
+        close?.visibility = visibility
         // 🔴 Scoped to the revealed state, NOT set once at window creation.
         // FLAG_WATCH_OUTSIDE_TOUCH delivers an ACTION_OUTSIDE for every touch
         // anywhere on the device, so leaving it on would wake this service on
@@ -1659,7 +1735,8 @@ class BubbleService : Service() {
             // than masked by the intention that it should not be there.
             (if (history?.visibility == View.VISIBLE) historyBlockPx else 0) +
             (if (snip?.visibility == View.VISIBLE) snipBlockPx else 0) +
-            (if (clip?.visibility == View.VISIBLE) clipBlockPx else 0)
+            (if (clip?.visibility == View.VISIBLE) clipBlockPx else 0) +
+            (if (close?.visibility == View.VISIBLE) closeBlockPx else 0)
 
     /**
      * The window's width.
@@ -2645,6 +2722,14 @@ class BubbleService : Service() {
          */
         private const val CLIP_DP = 44
         private const val CLIP_GAP_DP = 6
+
+        /**
+         * The close button's size and the gap above it — [CLIP_DP] and
+         * [CLIP_GAP_DP] again, its own pair for the reason [HISTORY_DP] gives.
+         * Their sum is [closeBlockPx], which is in the clamp.
+         */
+        private const val CLOSE_DP = 44
+        private const val CLOSE_GAP_DP = 6
 
         /**
          * How often the outbox drain runs while the bubble is up and the
