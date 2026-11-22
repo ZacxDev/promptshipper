@@ -56,12 +56,11 @@ class DictateActionViewTypesTest {
      */
     private val iconActions = listOf(
         R.id.copy_button,
-        R.id.screenshot_button,
-        R.id.share_button,
-        // Save audio — hands the stored recording to the share sheet. An
-        // ImageButton like its four neighbours, so the type assertions below
-        // and DictateActivity's own cast both cover it.
-        R.id.save_audio_button,
+        // 🔴 SHRANK from five to three in the 2026-11 restyle: Screenshot,
+        // Send and Save audio moved into this ⋮ menu (res/menu/dictate_overflow
+        // .xml), and their three ImageButtons were deleted. Their behaviour is
+        // DictateOverflowMenuTest's.
+        R.id.overflow_button,
         R.id.close_button,
     )
 
@@ -92,8 +91,8 @@ class DictateActionViewTypesTest {
     }
 
     /**
-     * Seam guard: the action row's membership is asserted as a set, so adding a
-     * fifth action (or deleting one) without updating [iconActions] fails here
+     * Seam guard: the action row's membership is asserted as a set, so adding an
+     * action (or deleting one) without updating [iconActions] fails here
      * rather than silently escaping type coverage.
      *
      * Observed working, not assumed: adding `screenshot_button` to the layout

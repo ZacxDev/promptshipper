@@ -19,7 +19,12 @@ import org.robolectric.annotation.Config
 /**
  * Guards for the minimal dictation overlay.
  *
- * ## 🔴 THE OVERFLOW IS GONE — and that is what these guards now pin
+ * ## 🔴 THE ROW TOGGLE IS GONE — and that is what these guards now pin
+ *
+ * ⚠ Not to be confused with the 2026-11 `@id/overflow_button`: that is a ⋮
+ * MENU for three secondary actions on a row that stays unconditional, not a
+ * toggle that hides the row. Its contract is `DictateOverflowMenuTest`'s; the
+ * row-is-always-visible guards below still hold, unchanged.
  *
  * The design pass hid the four actions (Copy / Screenshot / Send / Close)
  * behind an `@id/more_button` overflow, and most of this file existed to prove
@@ -80,21 +85,22 @@ class OverlayMinimalLayoutTest {
      * contentDescription/tooltipText coverage) *or* SHRINKS (a control removed
      * while something still addresses it).
      *
-     * 🔴 `more_button` was in here and is deliberately NOT any more — the
-     * overflow was deleted with the toggle. The set is now exactly
-     * `DictateActionViewTypesTest.iconActions`, i.e. the membership of
-     * `action_row`, because the row is the only icon-only chrome left on the
-     * card. Re-adding an overflow is a SHRINK-then-GROW this ledger reports.
+     * 🔴 `more_button` (the ROW TOGGLE) was in here and is deliberately NOT
+     * any more — it was deleted with the toggle. The 2026-11 restyle then
+     * changed the set twice over, and both are recorded so the ledger's
+     * history reads: Screenshot / Send / Save audio left (they are items in
+     * the `overflow_button` menu now, which is not a toggle — the row stays
+     * unconditional), `overflow_button` arrived, and `retranscribe_button`
+     * arrived because it became an icon-only ImageButton — which is exactly the
+     * case this ledger exists to hold to its labels.
      */
     private val iconOnlyControls = listOf(
         R.id.copy_button,
-        R.id.screenshot_button,
-        R.id.share_button,
-        // Save audio. Icon-only like the rest of the row, so it needs BOTH a
-        // contentDescription and a tooltipText — the glyph is a download
-        // arrow, which says nothing about *what* is being saved on its own.
-        R.id.save_audio_button,
+        R.id.overflow_button,
         R.id.close_button,
+        // Re-transcribe: icon-only since the restyle, so its word lives in
+        // contentDescription and tooltipText (@string/history_retranscribe).
+        R.id.retranscribe_button,
     )
 
     private fun inflate(): View {
@@ -173,9 +179,9 @@ class OverlayMinimalLayoutTest {
     fun theLayoutDefaultForTheActionRowIsVisible() {
         assertEquals(
             "activity_dictate.xml does not declare action_row visible. The " +
-                "actions are unconditional now — there is no overflow left to " +
-                "reveal them, so a hidden default means Copy / Screenshot / " +
-                "Send / Close are simply unreachable.",
+                "actions are unconditional now — there is no toggle left to " +
+                "reveal them, so a hidden default means Copy, the ⋮ menu and " +
+                "Close are simply unreachable.",
             View.VISIBLE,
             inflate().findViewById<View>(R.id.action_row).visibility
         )
@@ -215,8 +221,7 @@ class OverlayMinimalLayoutTest {
             }
 
             for (id in listOf(
-                R.id.copy_button, R.id.screenshot_button,
-                R.id.share_button, R.id.close_button
+                R.id.copy_button, R.id.overflow_button, R.id.close_button
             )) {
                 val v = a.findViewById<View>(id)
                 assertEquals(
@@ -231,7 +236,7 @@ class OverlayMinimalLayoutTest {
     }
 
     /**
-     * The overflow is GONE, not merely hidden — asserted against the inflated
+     * The row TOGGLE is GONE, not merely hidden — asserted against the inflated
      * tree so it cannot come back as a 0x0 or INVISIBLE leftover that still
      * takes a touch slot.
      *
@@ -303,8 +308,8 @@ class OverlayMinimalLayoutTest {
         try {
             val a = controller.get()
             val minPx = (48 * a.resources.displayMetrics.density).toInt()
-            // more_button is square; the row actions are 0dp-weighted in width
-            // and only their height is declared here.
+            // The row actions are 0dp-weighted in width and only their height
+            // is declared here; retranscribe_button is a 56dp square.
             for (id in iconOnlyControls + R.id.mic_button) {
                 val v = a.findViewById<View>(id)
                 val h = v.layoutParams.height

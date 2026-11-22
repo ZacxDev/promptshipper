@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The card's Close action: a subtle red-tinted container under a
+  @color/dicta_error glyph.
+
+  @color/dicta_error_container is a dark, low-chroma red so the glyph stays
+  legible — @color/dicta_error measures 5.95:1 on it and 5.30:1 on the pressed
+  @color/dicta_error_container_pressed, both above 1.4.11's 3:1 for a non-text
+  control. A saturated red fill would make the ✕ disappear into it and read as
+  an error that has already happened.
+
+  The colour is not the only cue (colors.xml): the ✕ glyph and the
+  contentDescription/tooltip "Close" carry the meaning on their own.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/dicta_error_container_pressed" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/dicta_error_container" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+</selector>

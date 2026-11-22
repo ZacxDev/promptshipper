@@ -68,8 +68,33 @@ class DictateActivity : Activity() {
      * layout's comment on why this is a second control and not the mic pill
      * wearing a different label.
      */
-    private lateinit var retranscribeButton: Button
-    private lateinit var saveAudioButton: ImageButton
+    private lateinit var retranscribeButton: ImageButton
+
+    /**
+     * Whether *Save audio* is offered — i.e. whether this card has a filed
+     * recording behind it.
+     *
+     * 🔴 This used to be `saveAudioButton.isEnabled`, and every assignment
+     * below is that button's assignment carried over one-for-one. The button
+     * moved into the overflow menu ([showOverflow]), so the state now lives
+     * here and the menu item reads it: disabled exactly when the button was.
+     * The setter also updates a menu that is open at the moment the state
+     * changes, so a recording filed while the menu is up enables the item in
+     * place rather than on the next open.
+     */
+    private var saveAudioAvailable = false
+        set(value) {
+            field = value
+            overflowMenu?.menu?.findItem(R.id.menu_save_audio)?.isEnabled = value
+        }
+
+    /**
+     * The overflow menu, while one is showing (or was last shown). `internal`
+     * only so a Robolectric test can reach its items without depending on
+     * shadow internals; production never reads it outside this class.
+     */
+    internal var overflowMenu: android.widget.PopupMenu? = null
+        private set
 
     /**
      * The stored dictation this card is showing, or null when it is showing a
@@ -156,7 +181,6 @@ class DictateActivity : Activity() {
         levelMeter = findViewById(R.id.level_meter)
         engineBadge = findViewById(R.id.engine_badge)
         retranscribeButton = findViewById(R.id.retranscribe_button)
-        saveAudioButton = findViewById(R.id.save_audio_button)
 
         // Robolectric can create the real Activity but cannot provide an
         // AndroidKeyStore, so settings construction is allowed to fail here
@@ -171,14 +195,11 @@ class DictateActivity : Activity() {
 
         micButton.setOnClickListener { toggleDictation() }
         retranscribeButton.setOnClickListener { retranscribe() }
-        saveAudioButton.setOnClickListener { saveAudio() }
-        // Copy/Screenshot/Send/Close are ImageButtons (ImageView subclasses, NOT
-        // Buttons) — findViewById<Button> on them would throw
+        // Copy/More/Close (and Re-transcribe) are ImageButtons (ImageView
+        // subclasses, NOT Buttons) — findViewById<Button> on them would throw
         // ClassCastException. Pinned by DictateActionViewTypesTest.
         findViewById<ImageButton>(R.id.copy_button).setOnClickListener { copyToClipboard() }
-        findViewById<ImageButton>(R.id.screenshot_button)
-            .setOnClickListener { requestScreenshot() }
-        findViewById<ImageButton>(R.id.share_button).setOnClickListener { shareText() }
+        findViewById<ImageButton>(R.id.overflow_button).setOnClickListener { showOverflow(it) }
         findViewById<ImageButton>(R.id.close_button).setOnClickListener { finish() }
 
         // Which of the three launch modes this is — see applyLaunchIntent,
@@ -374,7 +395,7 @@ class DictateActivity : Activity() {
         // Same re-purpose, same reason: this card has no audio of its own yet,
         // and a Save-audio left enabled would hand out the PREVIOUS
         // recording. It re-enables from onHistorySaved, via armAudioActions.
-        saveAudioButton.isEnabled = false
+        saveAudioAvailable = false
         // 🔴 NOT a "Speak" button. The bubble has already recorded and the
         // upload is in flight; there is nothing for the user to start here,
         // and a start control on this card is exactly what the operator asked
@@ -508,7 +529,7 @@ class DictateActivity : Activity() {
             statusText.text = getString(R.string.history_missing)
             retranscribeButton.isEnabled = false
             // The entry is gone, so there is no audio to hand out either.
-            saveAudioButton.isEnabled = false
+            saveAudioAvailable = false
             return
         }
         finalText.setLength(0)
@@ -520,7 +541,7 @@ class DictateActivity : Activity() {
         retranscribeButton.isEnabled = true
         // A history card always has an entry behind it, so Save audio is
         // available here for the same reason Re-transcribe is.
-        saveAudioButton.isEnabled = true
+        saveAudioAvailable = true
     }
 
     /**
@@ -570,7 +591,7 @@ class DictateActivity : Activity() {
                 historyItem = item
                 retranscribeButton.visibility = View.VISIBLE
                 retranscribeButton.isEnabled = true
-                saveAudioButton.isEnabled = true
+                saveAudioAvailable = true
             }
         }
     }
@@ -593,7 +614,7 @@ class DictateActivity : Activity() {
             runOnUiThread {
                 if (audio == null) {
                     statusText.text = getString(R.string.save_audio_missing)
-                    saveAudioButton.isEnabled = false
+                    saveAudioAvailable = false
                     return@runOnUiThread
                 }
                 // 🔴 A COPY, not the stored file. The provider must not be
@@ -714,6 +735,9 @@ class DictateActivity : Activity() {
     private fun historyStore(): DictationHistoryStore = DictationHistoryStore(this)
 
     override fun onDestroy() {
+        // A PopupMenu still showing when the card goes would leak its window.
+        overflowMenu?.dismiss()
+        overflowMenu = null
         busSink?.let { BubbleSessionBus.detach(it) }
         busSink = null
         // Before speech: the session owns the microphone and the recogniser's
@@ -1474,6 +1498,41 @@ class DictateActivity : Activity() {
                 )
             }
         )
+    }
+
+    // --- the overflow menu ---------------------------------------------------
+
+    /**
+     * Opens the ⋮ menu holding Screenshot, Send and Save audio.
+     *
+     * 🔴 Themed through [R.style.ThemeOverlay_Dicta_Popup] so the sheet is the
+     * card's dark surface, not the parent dialog theme's grey platform popup —
+     * see that style's comment in themes.xml.
+     *
+     * Built fresh on each open from [saveAudioAvailable], the one piece of
+     * availability the three actions carry; Screenshot and Send were never
+     * disabled or hidden as buttons and are not as items (they refuse inside
+     * the action, with a toast or a status line).
+     */
+    private fun showOverflow(anchor: View) {
+        val themed = android.view.ContextThemeWrapper(this, R.style.ThemeOverlay_Dicta_Popup)
+        val popup = android.widget.PopupMenu(themed, anchor)
+        popup.menuInflater.inflate(R.menu.dictate_overflow, popup.menu)
+        popup.menu.findItem(R.id.menu_save_audio).isEnabled = saveAudioAvailable
+        popup.setOnMenuItemClickListener { onOverflowItem(it.itemId) }
+        overflowMenu = popup
+        popup.show()
+    }
+
+    /**
+     * The menu's dispatch: each item calls the SAME handler its standalone
+     * button called before the restyle — nothing is re-derived here.
+     */
+    private fun onOverflowItem(id: Int): Boolean = when (id) {
+        R.id.menu_screenshot -> { requestScreenshot(); true }
+        R.id.menu_share -> { shareText(); true }
+        R.id.menu_save_audio -> { saveAudio(); true }
+        else -> false
     }
 
     // --- copy / share -------------------------------------------------------
