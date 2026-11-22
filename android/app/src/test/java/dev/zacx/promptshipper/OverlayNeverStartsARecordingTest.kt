@@ -518,7 +518,9 @@ class OverlayNeverStartsARecordingTest {
     private fun cardAfterAScreenshotStop(): DictateActivity {
         val a = liveCaptureCard()
         assertTrue("precondition: a capture is live", phoneRecogniserIsListening(a))
-        a.findViewById<View>(R.id.screenshot_button).performClick()
+        // Through the ⋮ menu since the 2026-11 restyle — the same
+        // requestScreenshot() the deleted @id/screenshot_button called.
+        assertTrue("the Screenshot item was not dispatched", chooseFromOverflow(a, R.id.menu_screenshot))
         shadowOf(Looper.getMainLooper()).idle()
         return a
     }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The card's ⋮ overflow (@id/overflow_button): the three SECONDARY actions.
+
+  Each item calls the SAME handler its standalone button used to call
+  (DictateActivity.onOverflowItem), and each keeps that button's availability:
+  Screenshot and Send are always enabled (they refuse in the action, with a
+  toast or a status line, rather than by hiding); Save audio is enabled only
+  once the card has a filed recording behind it, exactly when
+  @id/save_audio_button used to be enabled.
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/menu_screenshot"
+        android:title="@string/screenshot" />
+    <item
+        android:id="@+id/menu_share"
+        android:title="@string/share" />
+    <item
+        android:id="@+id/menu_save_audio"
+        android:title="@string/save_audio"
+        android:enabled="false" />
+</menu>

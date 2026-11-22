@@ -3,7 +3,6 @@ package dev.zacx.promptshipper
 import android.content.Intent
 import android.os.Looper
 import android.view.View
-import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import org.junit.After
@@ -131,7 +130,7 @@ class DictateHistoryCardTest {
             assertTrue(
                 "the Re-transcribe button is disabled after the item loaded, " +
                     "so the card's only action is unusable",
-                a.findViewById<Button>(R.id.retranscribe_button).isEnabled,
+                a.findViewById<View>(R.id.retranscribe_button).isEnabled,
             )
             assertEquals(
                 "the level meter is live on a card with no live capture",
@@ -177,7 +176,7 @@ class DictateHistoryCardTest {
             assertEquals(ctx.getString(R.string.history_missing), status)
             assertFalse(
                 "Re-transcribe is offered for an item that does not exist",
-                a.findViewById<Button>(R.id.retranscribe_button).isEnabled,
+                a.findViewById<View>(R.id.retranscribe_button).isEnabled,
             )
         } finally {
             controller.close()

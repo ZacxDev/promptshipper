@@ -3,7 +3,6 @@ package dev.zacx.promptshipper
 import android.content.Intent
 import android.net.Uri
 import android.widget.EditText
-import android.widget.ImageButton
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -25,8 +24,9 @@ import org.robolectric.annotation.Config
  * anything with it. The guard now refuses only when there is **neither** text
  * nor an attached image.
  *
- * These assertions go through the real click listener on `share_button` and
- * read the intent the activity actually started, so they cover the activity's
+ * These assertions go through the real ⋮ menu's Send item (`share_button`
+ * itself moved into the overflow in the 2026-11 restyle, calling the same
+ * `shareText()`) and read the intent the activity actually started, so they cover the activity's
  * branch as well as [ShareIntents]' wire format. Both halves are pinned,
  * because relaxing a guard is exactly the change that can relax it too far:
  *
@@ -69,7 +69,10 @@ class DictateShareTest {
         activity.screenshotUri = image
         activity.findViewById<EditText>(R.id.dictated_text).setText(text)
         drainStartedActivities(activity)
-        activity.findViewById<ImageButton>(R.id.share_button).performClick()
+        assertTrue(
+            "the overflow menu's Send item was not dispatched",
+            chooseFromOverflow(activity, R.id.menu_share),
+        )
     }
 
     @Test

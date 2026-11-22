@@ -109,4 +109,37 @@
         <item name="android:textColorSecondary">@color/dicta_on_surface_variant</item>
         <item name="android:textColorHighlight">@color/dicta_accent_container</item>
     </style>
+
+    <!--
+      The card's ⋮ overflow menu (DictateActivity.showOverflow), applied with a
+      ContextThemeWrapper over Theme.Dicta.Overlay for the PopupMenu only.
+
+      Without it the menu takes the parent Theme.Material.Dialog's stock
+      popup_background_material sheet — a grey platform surface that does not
+      match the ember-ringed card it drops out of. The sheet reuses
+      @drawable/popup_bg (surface_2, 16dp corners), the same one the settings
+      screen's language dropdown already wears, so the two dropdowns in the
+      app look alike.
+
+      The item text is a STATE list (@color/dicta_popup_text) because Save
+      audio is disabled until a recording is filed, and the overlay theme's
+      plain-colour textColorPrimary would draw that disabled item exactly like
+      an enabled one. DictateOverflowMenuTest resolves both attributes.
+
+      parent="" is REQUIRED: a dotted name is implicit inheritance in aapt2.
+    -->
+    <style name="ThemeOverlay.Dicta.Popup" parent="">
+        <item name="android:popupMenuStyle">@style/Widget.Dicta.PopupMenu</item>
+        <item name="android:textColorPrimary">@color/dicta_popup_text</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.Dicta.PopupMenu</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.Dicta.PopupMenu</item>
+    </style>
+
+    <style name="Widget.Dicta.PopupMenu" parent="android:Widget.Material.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_bg</item>
+    </style>
+
+    <style name="TextAppearance.Dicta.PopupMenu" parent="android:TextAppearance.Material.Widget.PopupMenu.Large">
+        <item name="android:textColor">@color/dicta_popup_text</item>
+    </style>
 </resources>
