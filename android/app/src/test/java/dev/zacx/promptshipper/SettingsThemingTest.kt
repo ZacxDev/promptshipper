@@ -114,6 +114,10 @@ class SettingsThemingTest {
         // own voice. The ledger GREW deliberately, which is exactly what its
         // failure message asks a new control to do.
         "stt_import_snippets" to "@drawable/outline_button_bg",
+        // Its sibling, the server sync (SnipSync). Outline for the same
+        // reason: a sync failure never removes anything. The ledger GREW
+        // deliberately.
+        "stt_sync_snippets" to "@drawable/outline_button_bg",
         // History export / import. Outline, not destructive: an export reads,
         // and an import never overwrites or deletes an item. The ledger GREW
         // deliberately.

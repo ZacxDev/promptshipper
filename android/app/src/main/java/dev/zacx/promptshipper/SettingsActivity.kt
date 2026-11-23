@@ -68,8 +68,9 @@ class SettingsActivity : Activity() {
     private lateinit var history: DictationHistoryStore
 
     /**
-     * The snip catalog (issue #38). This screen is the only **writer**; the
-     * picker is the only reader.
+     * The snip catalog (issue #38). It has two writers, both through
+     * [SnipStore.save]: this screen's file import, and [SnipSync] (run from
+     * here and after a pairing). The picker is the only reader.
      *
      * `internal` so a test can point it at a temp directory: the production
      * store roots itself under `noBackupFilesDir`, which is process-wide under
@@ -78,6 +79,15 @@ class SettingsActivity : Activity() {
      * that; `onCreate` only fills it in if it is still unset.
      */
     internal var snippets: SnipStore? = null
+
+    /**
+     * The server sync behind "Sync from server", and the one run when this
+     * screen opens on a paired phone. `internal` and filled in by `onCreate`
+     * only when unset, for [snippets]' reason: a test points it at a fake
+     * connection, since Robolectric has no AndroidKeyStore to decrypt a real
+     * token with.
+     */
+    internal var snipSync: SnipSync? = null
 
     /**
      * The last usage actually rendered, so the delete confirmation can name the
@@ -121,6 +131,7 @@ class SettingsActivity : Activity() {
         snippetsState = findViewById(R.id.stt_snippets_state)
         history = DictationHistoryStore(this)
         if (snippets == null) snippets = SnipStore(this)
+        if (snipSync == null) snipSync = SnipSync(snippets!!, SnipSync.credentialsOf(settings))
         clipSettings = ClipSettings.create(this)
         clipUrlField = findViewById(R.id.clip_url)
         clipTokenField = findViewById(R.id.clip_token)
@@ -162,11 +173,18 @@ class SettingsActivity : Activity() {
         findViewById<Button>(R.id.stt_clear_history).setOnClickListener { clearHistory() }
         findViewById<Button>(R.id.stt_import_snippets)
             .setOnClickListener { importSnippets() }
+        findViewById<Button>(R.id.stt_sync_snippets)
+            .setOnClickListener { syncSnippets() }
         findViewById<Button>(R.id.stt_export_history).setOnClickListener { exportHistory() }
         findViewById<Button>(R.id.stt_import_history).setOnClickListener { importHistory() }
 
         refreshHistoryUsage()
         refreshSnippetsState()
+        // On open, only when paired: an unpaired phone has nothing to sync
+        // from, and saying so on every visit would bury the catalog line.
+        // Queued on the same single worker AFTER the read above, so the
+        // sync's result is the line that stays.
+        if (PairingWriter.isPaired(settings)) syncSnippets()
     }
 
     override fun onDestroy() {
@@ -794,6 +812,45 @@ class SettingsActivity : Activity() {
     }
 
     /**
+     * Runs [snipSync] on [worker] and puts its outcome on the snippets line.
+     *
+     * 🔴 The catalog line is re-read AFTER the sync and shown with every
+     * outcome, so a failure reads as "this failed, and here is what you still
+     * have" rather than as a lost catalog.
+     */
+    private fun syncSnippets() {
+        val sync = snipSync ?: return
+        val store = snippets ?: return
+        snippetsState.text = getString(R.string.stt_snippets_syncing)
+        worker.execute {
+            val outcome = sync.sync()
+            val catalog = runCatching { store.catalog() }.getOrNull()
+            runOnUiThread { snippetsState.text = syncText(outcome, catalog) }
+        }
+    }
+
+    /** The one place a sync outcome is worded. */
+    private fun syncText(outcome: SnipSync.Outcome, catalog: SnipStore.Catalog?): String {
+        val have = catalogText(catalog)
+        val failure = when (outcome) {
+            is SnipSync.Outcome.Synced -> return have
+            SnipSync.Outcome.Unchanged -> return getString(R.string.stt_snippets_sync_unchanged, have)
+            SnipSync.Outcome.NotPaired -> getString(R.string.stt_snippets_sync_not_paired)
+            is SnipSync.Outcome.Unauthorized ->
+                getString(R.string.stt_snippets_sync_unauthorized, outcome.status)
+            is SnipSync.Outcome.Unavailable -> getString(
+                R.string.stt_snippets_sync_unavailable,
+                outcome.detail ?: getString(R.string.stt_snippets_sync_no_detail),
+            )
+            is SnipSync.Outcome.HttpError -> getString(R.string.stt_snippets_sync_http, outcome.status)
+            is SnipSync.Outcome.Invalid -> getString(R.string.stt_snippets_sync_invalid, outcome.reason)
+            is SnipSync.Outcome.Network -> getString(R.string.stt_snippets_sync_network, outcome.message)
+            is SnipSync.Outcome.StoreFailed -> getString(R.string.stt_snippets_sync_store, outcome.message)
+        }
+        return failure + "\n" + have
+    }
+
+    /**
      * The one place the snippets line is written.
      *
      * 🔴 `null` renders the **named** empty state, never a blank line and
@@ -803,16 +860,18 @@ class SettingsActivity : Activity() {
      * broken feature.
      */
     private fun renderSnippets(catalog: SnipStore.Catalog?) {
-        snippetsState.text = when {
-            catalog == null || catalog.snippets.isEmpty() ->
-                getString(R.string.stt_snippets_none)
-            else -> resources.getQuantityString(
-                R.plurals.stt_snippets_count,
-                catalog.snippets.size,
-                catalog.snippets.size,
-                importedAtText(catalog.importedAtMs),
-            )
-        }
+        snippetsState.text = catalogText(catalog)
+    }
+
+    private fun catalogText(catalog: SnipStore.Catalog?): String = when {
+        catalog == null || catalog.snippets.isEmpty() ->
+            getString(R.string.stt_snippets_none)
+        else -> resources.getQuantityString(
+            if (catalog.fromServer) R.plurals.stt_snippets_count_synced else R.plurals.stt_snippets_count,
+            catalog.snippets.size,
+            catalog.snippets.size,
+            importedAtText(catalog.importedAtMs),
+        )
     }
 
     /**

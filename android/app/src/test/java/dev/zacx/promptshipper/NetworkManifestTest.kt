@@ -226,7 +226,7 @@ class NetworkManifestTest {
             .map { it.name }
             .toSet()
         assertEquals(setOf("PrivateNetwork.kt"), openers)
-        for (client in listOf("SttHttp.kt", "ClipHttp.kt")) {
+        for (client in listOf("SttHttp.kt", "ClipHttp.kt", "SnipSync.kt")) {
             assertTrue(
                 "$client's default opener is not PrivateNetwork::open",
                 File(dir, client).readText().contains("= PrivateNetwork::open"),

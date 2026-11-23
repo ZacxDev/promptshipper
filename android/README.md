@@ -117,6 +117,25 @@ that use the clip server (for example through the MCP server):
     effect immediately while the bubble runs. A service that starts with the
     screen off (at boot) gets the same 5-minute grace.
 
+## Snippets
+
+The snippet picker reads a catalog stored on the phone. The app fills it from
+the paired STT server's `GET /v1/snippets`, using the same bearer token as
+transcription:
+
+- right after a pairing is applied;
+- each time Settings opens on a paired phone;
+- when you tap Settings → **Sync from server**.
+
+The request carries `If-None-Match`, so an unchanged catalog comes back as a
+`304` and nothing is rewritten. A failed sync never removes the snippets
+already on the phone. That covers no pairing or token, an unreachable server,
+`401`/`403`, `503` (no catalog mounted), and a body that is not a catalog. The
+Settings line names the failure. There is no background polling.
+
+Settings → **Import snippets…** still takes a `snippets.json` file, for when
+there is no server catalog.
+
 ## History import from dicta
 
 Settings → **Import history from a file** reads the archive format in

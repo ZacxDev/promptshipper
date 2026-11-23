@@ -519,6 +519,21 @@
             android:contentDescription="@string/stt_import_snippets_desc"
             android:text="@string/stt_import_snippets" />
 
+        <!-- The server route (SnipSync): GET /v1/snippets on the paired STT
+             server. Styled exactly like @id/stt_import_snippets beside it, which
+             stays as the fallback for a phone with no server catalog. -->
+        <Button
+            android:id="@+id/stt_sync_snippets"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/outline_button_bg"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/dicta_on_surface"
+            android:contentDescription="@string/stt_sync_snippets_desc"
+            android:text="@string/stt_sync_snippets" />
+
         <!-- 🔴 ITS OWN SECTION, for the reason the snippets heading above gives
              about itself: the transcription cluster is "which service, which
              language, which token" with @id/stt_status as its result line, and
