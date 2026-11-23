@@ -12,9 +12,10 @@ import java.io.FileOutputStream
  *
  * Issue #38 offers a second import route — fetch the catalog from the host over
  * the tailnet — as a follow-up. That follow-up must not touch the picker, so
- * the picker depends on [SnipSource] and nothing else: a fetcher drops in as a
- * second implementation behind it. 🔴 The fetch itself is deliberately **not
- * built here**; one seam is the whole of the preparation for it.
+ * the picker depends on [SnipSource] and nothing else. The fetch is
+ * [SnipSync], and it did not need a second implementation: it WRITES through
+ * [SnipStore.save] like the file import does, so the picker still reads one
+ * store and never knows which route filled it.
  */
 fun interface SnipSource {
     /** The catalog, or `null` when nothing has been imported (or it is unreadable). */
@@ -66,7 +67,24 @@ class SnipStore internal constructor(
      * last write happened to be — including a write this app made for an
      * unrelated reason.
      */
-    data class Catalog(val snippets: List<Snippet>, val importedAtMs: Long)
+    data class Catalog(
+        val snippets: List<Snippet>,
+        val importedAtMs: Long,
+        /**
+         * True when this catalog came from the paired server ([SnipSync])
+         * rather than from a file. Read by the settings line, which says
+         * "synced from server" rather than "imported".
+         */
+        val fromServer: Boolean = false,
+        /**
+         * The server's `ETag` for exactly these rows, sent back as
+         * `If-None-Match` by [SnipSync]. 🔴 Stored IN the envelope, not in
+         * prefs, so it cannot outlive the rows it describes: a file import
+         * writes no ETag, so the next sync re-downloads instead of being told
+         * "unchanged" about a catalog the server never sent.
+         */
+        val etag: String? = null,
+    )
 
     private val file: File get() = File(dir, FILE)
     private val temp: File get() = File(dir, "$FILE$TMP_SUFFIX")
@@ -79,6 +97,8 @@ class SnipStore internal constructor(
             Catalog(
                 snippets = SnipCatalog.parse(root.getJSONArray(KEY_SNIPPETS).toString()),
                 importedAtMs = root.optLong(KEY_IMPORTED_AT, 0L),
+                fromServer = root.optString(KEY_SOURCE, "") == SOURCE_SERVER,
+                etag = if (root.isNull(KEY_ETAG)) null else root.optString(KEY_ETAG, "").ifEmpty { null },
             )
         } catch (_: Exception) {
             // See "Failure posture" on the class: report nothing imported, and
@@ -95,12 +115,19 @@ class SnipStore internal constructor(
      * PREVIOUS catalog rather than a torn one. The in-place fallback covers the
      * filesystems whose `renameTo` refuses an existing target.
      */
-    fun save(snippets: List<Snippet>, importedAtMs: Long) = synchronized(LOCK) {
+    fun save(
+        snippets: List<Snippet>,
+        importedAtMs: Long,
+        fromServer: Boolean = false,
+        etag: String? = null,
+    ) = synchronized(LOCK) {
         dir.mkdirs()
-        val payload = JSONObject()
+        val root = JSONObject()
             .put(KEY_IMPORTED_AT, importedAtMs)
             .put(KEY_SNIPPETS, SnipCatalog.toJson(snippets))
-            .toString()
+        if (fromServer) root.put(KEY_SOURCE, SOURCE_SERVER)
+        if (etag != null) root.put(KEY_ETAG, etag)
+        val payload = root.toString()
         val scratch = temp
         FileOutputStream(scratch).use { out ->
             out.write(payload.toByteArray())
@@ -130,6 +157,9 @@ class SnipStore internal constructor(
         private const val TMP_SUFFIX = ".tmp"
         private const val KEY_SNIPPETS = "snippets"
         private const val KEY_IMPORTED_AT = "importedAtMs"
+        private const val KEY_SOURCE = "source"
+        private const val KEY_ETAG = "etag"
+        private const val SOURCE_SERVER = "server"
 
         // 🔴 There is deliberately NO `version` field in the envelope. One was
         // written here and read by nothing — a write-only field is not a

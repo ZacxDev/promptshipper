@@ -214,6 +214,10 @@ class SnipSeamLedgerTest {
         "SnipPickerActivity.kt",
         "SnipRow.kt",
         "SnipStore.kt",
+        // The server route for the catalog (GET /v1/snippets). It names no
+        // capture symbol, so it is held to this list's stricter claim. The
+        // ledger GREW deliberately.
+        "SnipSync.kt",
         // Browse ordering by last use. It belongs in THIS list rather than in
         // snipAwareMicOwningHosts because it owns no microphone path at all: it
         // reads and writes one JSON file of labels and timestamps and names no

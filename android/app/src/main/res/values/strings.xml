@@ -502,7 +502,7 @@
          failure SnipCatalog refuses a broken file to avoid, relocated into the
          UI: a picker showing an empty list is indistinguishable from a broken
          feature. -->
-    <string name="snip_empty_no_catalog">No snippets imported yet. Import a snip snippets.json from Settings.</string>
+    <string name="snip_empty_no_catalog">No snippets yet. In Settings, sync them from your server or import a snip snippets.json.</string>
     <string name="snip_empty_catalog_empty">The imported snippets.json has no snippets in it.</string>
     <string name="snip_empty_no_matches">No snippets match that.</string>
 
@@ -611,6 +611,27 @@
          operator cannot tell apart from a lost tap. -->
     <string name="stt_snippets_import_no_file">the picker returned no file</string>
     <string name="stt_snippets_no_picker">No app on this phone can open a document.</string>
+    <string name="stt_sync_snippets">Sync from server</string>
+    <string name="stt_sync_snippets_desc">Sync snippets from server. Downloads the snippet catalog from the paired transcription server; a failure keeps the snippets already on this phone.</string>
+    <!-- @plurals/stt_snippets_count's shape for a catalog that came from the
+         paired server (SnipSync) rather than from a file. %2$s is when. -->
+    <plurals name="stt_snippets_count_synced">
+        <item quantity="one">%1$d snippet, synced from server %2$s</item>
+        <item quantity="other">%1$d snippets, synced from server %2$s</item>
+    </plurals>
+    <string name="stt_snippets_syncing">Snippets: syncing from server…</string>
+    <!-- 🔴 Every sync failure names its cause, and the line under it (the
+         catalog still on the phone) says nothing was lost: SnipSync never
+         writes on a failure. %1$s in the unchanged frame is that catalog line. -->
+    <string name="stt_snippets_sync_unchanged">%1$s (up to date)</string>
+    <string name="stt_snippets_sync_not_paired">Sync failed: no transcription server or token is set. Pair this phone first.</string>
+    <string name="stt_snippets_sync_unauthorized">Sync failed: the server refused the token (HTTP %1$d). Re-pair this phone.</string>
+    <string name="stt_snippets_sync_unavailable">Sync failed: the server has no usable snippet catalog (%1$s).</string>
+    <string name="stt_snippets_sync_no_detail">no reason given</string>
+    <string name="stt_snippets_sync_http">Sync failed: the server answered HTTP %1$d.</string>
+    <string name="stt_snippets_sync_invalid">Sync failed: the server\'s catalog is not usable: %1$s</string>
+    <string name="stt_snippets_sync_network">Sync failed: could not reach the server (%1$s).</string>
+    <string name="stt_snippets_sync_store">Sync failed: the catalog could not be saved (%1$s).</string>
 
     <!-- ===== The shared clipboard ========================================= -->
 

@@ -114,6 +114,10 @@ class SettingsThemingTest {
         // own voice. The ledger GREW deliberately, which is exactly what its
         // failure message asks a new control to do.
         "stt_import_snippets" to "@drawable/outline_button_bg",
+        // Its sibling, the server sync (SnipSync). Outline for the same
+        // reason: a sync failure never removes anything. The ledger GREW
+        // deliberately.
+        "stt_sync_snippets" to "@drawable/outline_button_bg",
         // History export / import. Outline, not destructive: an export reads,
         // and an import never overwrites or deletes an item. The ledger GREW
         // deliberately.
@@ -343,11 +347,13 @@ class SettingsThemingTest {
         // 🔴 RE-DERIVED at 12 by @id/clip_feed_dictations, the second
         // checkbox (the opt-in dictation feed): text-bearing, so it joins.
         // 🔴 RE-DERIVED at 13 by @id/clip_agent_push, the third checkbox.
+        // 🔴 RE-DERIVED at 14 by @id/stt_sync_snippets, an outlined,
+        // non-destructive, text-bearing button beside Import snippets.
         assertEquals(
-            "expected to examine all THREE checkboxes, all FOUR fields and all SIX " +
+            "expected to examine all THREE checkboxes, all FOUR fields and all SEVEN " +
                 "outlined buttons (STT Save, Test, Export history, Import " +
-                "history, Import snippets, clipboard Save); examined $examined",
-            13,
+                "history, Import snippets, Sync snippets, clipboard Save); examined $examined",
+            14,
             examined.size
         )
     }
@@ -590,10 +596,12 @@ class SettingsThemingTest {
         // clipboard group had only the clear button.)
         // 🔴 NINE since history export and import (@id/stt_export_history,
         // @id/stt_import_history), re-derived the same way.
+        // 🔴 TEN since "Sync from server" (@id/stt_sync_snippets), re-derived
+        // the same way.
         assertEquals(
-            "the screen no longer has the nine buttons this guard was written " +
+            "the screen no longer has the ten buttons this guard was written " +
                 "for; re-derive it rather than loosening it",
-            9,
+            10,
             buttons.size
         )
         for (button in buttons) {

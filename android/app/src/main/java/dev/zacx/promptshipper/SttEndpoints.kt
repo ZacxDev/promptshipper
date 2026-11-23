@@ -15,6 +15,7 @@ object SttEndpoints {
 
     const val TRANSCRIPTIONS_PATH: String = "/v1/audio/transcriptions"
     const val HEALTHZ_PATH: String = "/healthz"
+    const val SNIPPETS_PATH: String = "/v1/snippets"
 
     /**
      * Why [baseUrl] cannot be the transcription server's base URL, or null.
@@ -35,6 +36,14 @@ object SttEndpoints {
      * 503.
      */
     fun healthz(baseUrl: String): String = join(baseUrl, HEALTHZ_PATH)
+
+    /**
+     * `GET` target for the snippet catalog ([SnipSync]).
+     *
+     * Bearer-authenticated with the SAME token as [transcriptions]: the
+     * server's `/v1/snippets` route sits behind the same `require_token`.
+     */
+    fun snippets(baseUrl: String): String = join(baseUrl, SNIPPETS_PATH)
 
     /**
      * The bearer header value.

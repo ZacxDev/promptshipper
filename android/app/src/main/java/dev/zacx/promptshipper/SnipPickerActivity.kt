@@ -53,8 +53,9 @@ class SnipPickerActivity : FloatingPickerActivity<Snippet>() {
     /**
      * Where the catalog comes from. `null` means [SnipStore].
      *
-     * The seam the tailnet-fetch follow-up drops into, and the seam a test uses
-     * so that "type a query, then assert" is not also a test of the filesystem.
+     * The seam a test uses so that "type a query, then assert" is not also a
+     * test of the filesystem. The server fetch ([SnipSync]) did not need it:
+     * it writes into [SnipStore], so production still reads the store.
      */
     internal var source: SnipSource? = null
 

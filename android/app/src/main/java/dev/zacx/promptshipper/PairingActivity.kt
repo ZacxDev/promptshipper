@@ -47,6 +47,14 @@ class PairingActivity : Activity() {
     private lateinit var feed: android.widget.CheckBox
     private var parsed: PairingPayload.Pairing? = null
 
+    /**
+     * The settings [apply] writes. `internal` test seams, null in production
+     * (which uses `create`): Robolectric has no AndroidKeyStore, so only an
+     * injected cipher lets a test reach the code after a SUCCESSFUL pairing.
+     */
+    internal var sttOverride: SttSettings? = null
+    internal var clipOverride: ClipSettings? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_pairing)
@@ -140,14 +148,23 @@ class PairingActivity : Activity() {
 
     private fun apply() {
         val pairing = parsed ?: return
+        val stt = sttOverride ?: SttSettings.create(this)
+        val clip = clipOverride ?: ClipSettings.create(this)
         try {
-            PairingWriter.apply(pairing, SttSettings.create(this), ClipSettings.create(this))
+            PairingWriter.apply(pairing, stt, clip)
         } catch (e: Exception) {
             // Exception: the keystore's failures are checked exceptions.
             status.text = getString(R.string.pairing_failed, e.javaClass.simpleName)
             return
         }
-        ClipSettings.create(this).feedDictations = feed.isChecked
+        clip.feedDictations = feed.isChecked
+        // A freshly paired phone gets the server's snippet catalog now rather
+        // than on the next Settings visit. Here, after the writer returned,
+        // because this is the one place a pairing is applied; in the
+        // background, because this screen finishes on the next line. A failure
+        // changes nothing (SnipSync's contract), and Settings shows the
+        // outcome of its own sync when it is next opened.
+        SnipSync.launch(SnipSync.forServer(this, stt))
         val pasted = input.text.toString()
         input.setText("")
         clearClipboardIfItHolds(pasted)
